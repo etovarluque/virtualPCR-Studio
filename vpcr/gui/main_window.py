@@ -42,7 +42,7 @@ from vpcr.gui.widgets import (NoWheelComboBox, NoWheelSpinBox,
 from vpcr.core.export import (EXCEL_ROW_LIMIT, detail_table, export_run,
                               run_folder_name, summary_table, unique_dir,
                               write_tables)
-from vpcr.core.model import PrimerPair, RunConfig
+from vpcr.core.model import STUDIO_DEFAULTS, PrimerPair, RunConfig
 from vpcr.core.primers import MIN_PRIMER_LEN
 from vpcr.core.runner import (JarError, discover_javas, jar_class_version,
                               run_batch, select_java)
@@ -53,15 +53,15 @@ TARGET_LIST_HEIGHT = 115
 
 # The single source of truth for the Parameters section: the widgets are built
 # empty and filled from here, so "Reset to defaults" cannot drift from what the
-# app starts with. Tuned for mitochondrial barcoding rather than the JAR's own
-# defaults (30-3000 bp, linear).
+# app starts with. The run parameters come from STUDIO_DEFAULTS, which the CLI
+# shares, so both routes give the same result for the same inputs.
 PARAM_DEFAULTS: dict[str, object] = {
-    "min_len": 90,
-    "max_len": 2200,
-    "err3": 1,
-    "workers": 4,
+    "min_len": STUDIO_DEFAULTS["min_len"],
+    "max_len": STUDIO_DEFAULTS["max_len"],
+    "err3": STUDIO_DEFAULTS["n_3prime_errors"],
+    "workers": STUDIO_DEFAULTS["workers"],
     "heap": "",
-    "circular": True,
+    "circular": STUDIO_DEFAULTS["circular"],
     "probe": False,
     "seqext": True,
     "keep": False,
@@ -207,6 +207,7 @@ class MainWindow(QMainWindow):
         self._detail_df: pd.DataFrame | None = None
         # Folder chosen once per run so the .out reports and the export share it.
         self._run_outdir: Path | None = None
+        self._run_include_sequence = True
         # The primer tables live in a dialog that is rebuilt on every open, so
         # the window, not a widget, owns what was loaded.
         self.primers = PrimerState()
@@ -283,8 +284,10 @@ class MainWindow(QMainWindow):
         self.run_label.textChanged.connect(refresh)
         self.out_edit.textChanged.connect(refresh)
         self.auto_export.toggled.connect(refresh)
-        for w in (self.min_len, self.max_len, self.err3):
+        # Every PARAM_DEFAULTS widget, or "modified" and Reset go stale.
+        for w in (self.min_len, self.max_len, self.err3, self.workers):
             w.valueChanged.connect(refresh)
+        self.heap.currentTextChanged.connect(refresh)
         for w in (self.circular, self.probe, self.seqext, self.keep):
             w.toggled.connect(refresh)
         m = self.target_list.model()
@@ -428,6 +431,28 @@ class MainWindow(QMainWindow):
         self._schedule_save()
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        # Destroying a QThread that is still running aborts the process, and
+        # the JAR runs it started would be orphaned. Stop the run first.
+        if self.worker is not None and self.worker.isRunning():
+            answer = QMessageBox.question(
+                self, APP_NAME, "A run is in progress. Stop it and quit?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if answer != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+            # Disconnected first: the partial result would otherwise arrive
+            # after the window is gone and try to build tables and export.
+            # PyQt raises on a signal with no connections, and an exception
+            # escaping closeEvent aborts the process.
+            for sig in (self.worker.progress, self.worker.finished_ok, self.worker.failed):
+                try:
+                    sig.disconnect()
+                except TypeError:
+                    pass
+            self.worker.cancel()
+            with self._busy("Stopping the run…"):
+                self.worker.wait()
         self._save_timer.stop()
         self._save_ui_state()
         super().closeEvent(event)
@@ -869,6 +894,9 @@ class MainWindow(QMainWindow):
             n_3prime_errors=self.err3.value(), circular=self.circular.isChecked(),
             probe=self.probe.isChecked(), sequence_extract=self.seqext.isChecked(),
         )
+        # Exports describe the run that produced the results, not whatever the
+        # checkbox says by the time someone presses Export.
+        self._run_include_sequence = cfg.sequence_extract
         # One folder per run, named once here so its timestamp is stable between
         # the worker (which writes the .out reports as it goes) and the export at
         # the end. With both options on, 'Keep raw .out' and auto-export land
@@ -923,26 +951,60 @@ class MainWindow(QMainWindow):
     def cancel_run(self) -> None:
         if self.worker:
             self.worker.cancel()
-            self._log("Cancelling after current jobs finish...")
+            self.cancel_btn.setEnabled(False)
+            self._log("Cancelling: queued jobs dropped, running JAR processes stopped...")
 
     def on_progress(self, done: int, total: int, label: str) -> None:
         self.progress.setValue(done)
         self._log(f"[{done}/{total}] {label}")
         self.statusBar().showMessage(label)
 
+    def _log_incomplete(self, results: list) -> None:
+        """Put a partial run on record, in the log that run_log.txt archives."""
+        total = getattr(results, "total", len(results))
+        if getattr(results, "cancelled", False):
+            self._log(f"CANCELLED: {len(results)} of {total} job(s) finished; "
+                      f"the tables below are partial.")
+        errors = getattr(results, "errors", [])
+        if errors:
+            self._log(f"WARNING: {len(errors)} of {total} job(s) failed; their pairs "
+                      f"are missing from the tables:")
+            for pair, target, msg in errors:
+                self._log(f"  {pair} / {target}: {msg}")
+
+    def _warn_failed_jobs(self, results: list) -> None:
+        errors = getattr(results, "errors", [])
+        if not errors:
+            return
+        total = getattr(results, "total", len(results))
+        shown = "\n".join(f"• {p} / {t}: {m.splitlines()[0] if m else ''}"
+                          for p, t, m in errors[:8])
+        more = f"\n…and {len(errors) - 8} more" if len(errors) > 8 else ""
+        QMessageBox.warning(
+            self, APP_NAME,
+            f"{len(errors)} of {total} job(s) failed and are missing from the "
+            f"results:\n\n{shown}{more}\n\nThe full messages are in the Log tab "
+            f"and in run_log.txt.")
+
     def on_finished(self, results: list) -> None:
         self.results = results
         self.cancel_btn.setEnabled(False)
+        cancelled = getattr(results, "cancelled", False)
+        incomplete = cancelled or bool(getattr(results, "errors", []))
+        self._log_incomplete(results)
         try:
             if not results:
-                self._log("No results.")
+                self._log("Run cancelled before any job finished." if cancelled
+                          else "No results.")
+                self.statusBar().showMessage("Cancelled" if cancelled else "No results")
+                self._warn_failed_jobs(results)
                 return
             # Building the detail table materialises one row per amplicon; on a
             # huge result set this is where the app would freeze or run out of
             # memory. Do it under a wait cursor and survive a MemoryError.
             with self._busy("Building result tables…"):
                 summary = summary_table(results)
-                detail = detail_table(results, include_sequence=self.seqext.isChecked())
+                detail = detail_table(results, include_sequence=self._run_include_sequence)
                 self.summary_model.set_dataframe(summary)
                 # Sequences are long; hide them on screen but keep them for export.
                 self._detail_df = detail.drop(columns=["amplicon_seq"], errors="ignore")
@@ -956,13 +1018,22 @@ class MainWindow(QMainWindow):
             multi = int((summary["n_multi_amplicon"]).sum())
             self._log(f"Done. {len(summary)} pair/file combination(s), {len(detail)} detail rows. "
                       f"{multi} sequence(s) with >1 product, {multiband} with >1 distinct size.")
-            self.statusBar().showMessage("Done")
+            self.statusBar().showMessage("Cancelled — partial results" if cancelled
+                                         else "Done, with failed jobs" if incomplete
+                                         else "Done")
 
-            if self.auto_export.isChecked():
+            # A cancelled run is not exported on its own: the user stopped it,
+            # and a folder that looks like any other would hide that it is
+            # partial. Export results still writes it on request.
+            if self.auto_export.isChecked() and cancelled:
+                self._log("Auto-export skipped because the run was cancelled; "
+                          "use Export results to save the finished jobs.")
+            elif self.auto_export.isChecked():
                 with self._busy("Exporting results…"):
                     outdir = self._export(quiet=True, outdir=self._run_outdir)
                 if outdir:
                     self.statusBar().showMessage(f"Exported to {outdir}")
+            self._warn_failed_jobs(results)
         except MemoryError:
             self._detail_df = None
             self.export_btn.setEnabled(bool(results))
@@ -1010,11 +1081,11 @@ class MainWindow(QMainWindow):
                 outdir, paths = export_run(
                     base, self.results, log_text=self.log.toPlainText(),
                     label=self.run_label.text(),
-                    include_sequence=self.seqext.isChecked())
+                    include_sequence=self._run_include_sequence)
             else:
                 paths = write_tables(
                     outdir, self.results, self.log.toPlainText(),
-                    include_sequence=self.seqext.isChecked())
+                    include_sequence=self._run_include_sequence)
         except PermissionError as e:
             # The usual cause is the workbook still open in Excel.
             self._log(f"EXPORT FAILED: {e}")
@@ -1046,9 +1117,14 @@ class MainWindow(QMainWindow):
     def export_results(self) -> None:
         if not self.results:
             QMessageBox.information(self, APP_NAME, "Nothing to export yet."); return
-        # Reuse the run's folder when it has one, so a manual export lands with
-        # the .out reports / auto-export instead of spawning a parallel folder.
-        self._export(outdir=self._run_outdir)
+        # The run's folder is reused while it holds no tables yet (auto-export
+        # off, raw .out reports kept), so the export lands beside the reports.
+        # Once it has tables, a manual export gets a fresh folder rather than
+        # overwriting them: pressing Export twice gives two folders.
+        outdir = self._run_outdir
+        if outdir is not None and (outdir / "summary.csv").exists():
+            outdir = None
+        self._export(outdir=outdir)
 
 
 def main() -> int:

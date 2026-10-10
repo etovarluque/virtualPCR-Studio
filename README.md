@@ -120,7 +120,9 @@ would restore; the header summary appends `• modified` while any of them diffe
 
 The defaults live in one place, `PARAM_DEFAULTS` in `gui/main_window.py`, and
 the widgets are built empty and filled from it — so the button cannot drift from
-what the app starts with:
+what the app starts with. The run parameters in it come from `STUDIO_DEFAULTS`
+in `core/model.py`, which the CLI uses too, so the GUI and the CLI give the same
+result for the same inputs:
 
 | | |
 |---|---|
@@ -161,7 +163,8 @@ On that machine, install Python 3.10+ and a JRE, then double-click
 
 `java -version` should print 25 or higher for the JAR in `jar/`. The app
 searches for JREs on `PATH`, under `C:\Program Files\Java` and
-`C:\Program Files\Eclipse Adoptium`, and picks one new enough for the JAR.
+`C:\Program Files\Eclipse Adoptium`, and picks one new enough for the JAR. Java
+does not have to be on `PATH`: a JDK in one of those folders is found anyway.
 
 The JAR is looked for in `jar/`, next to the app, and one level up, so other
 layouts work too as long as you point at it with *Browse* or `--jar`.
@@ -174,13 +177,18 @@ GUI — `Run vPCR.bat`, or:
 python -m vpcr
 ```
 
-CLI — same core, no window. `--jar` defaults to the one in `jar/`:
+CLI — same core, no window. `--jar` defaults to the one in `jar/`, and the
+parameters default to the GUI's (90–2200 bp, 1 mismatch, circular):
 
 ```
 python -m vpcr.cli --primers primers.xlsx --sheet 12-16S \
                    --targets genomes.fasta \
                    --out results/ --circular --minlen 90 --maxlen 2200
 ```
+
+Pass `--linear` for a linear template. `--sheet` takes a worksheet name or a
+0-based index (`--sheet 1` is the second sheet). If any job fails, the tables are
+still written, the failures are listed in `run_log.txt`, and the exit status is 1.
 
 The core carries no Qt import, so it can also be driven from a script:
 
@@ -194,6 +202,10 @@ results = run_batch(pairs, ["genomes.fasta"], "jar/virtualPCR.jar")
 write_tables("results/", results)
 ```
 
+`run_batch` returns a list with three extra attributes: `errors` (one
+`(pair, target, message)` per failed job), `cancelled`, and `complete`, which is
+true only when every job ran and succeeded.
+
 ## Primer files
 
 No general format exists; primer sheets are assay-specific. Four shapes load
@@ -202,7 +214,7 @@ directly:
 | Shape | Layout |
 |---|---|
 | FASTA | records read two at a time: forward, reverse |
-| TSV/CSV with header | any column order, detected by content |
+| TSV/CSV with header | any column order, detected by content; comma, tab or `;` (Excel in Spanish) |
 | TSV/CSV without header | `name<TAB>forward<TAB>reverse` (the JAR's FRpairs format) |
 | XLSX | any column order; pick the worksheet on load |
 
@@ -328,10 +340,16 @@ circular templates. `Help → Java / JAR info` shows what is installed.
 
 **Old build: amplicon sequences are one base short.** It reports a span of
 `end - start + 1` but writes `end - start` bases, dropping the last base of the
-reverse primer binding site. `parser.repair_sequences` restores it from the
-target FASTA; verified byte-for-byte against 11,117 amplicons. Pass
-`--no-repair` to keep the output verbatim. `amplicon_size` is always the
-reported span. The new build emits the full sequence.
+reverse primer binding site. `parser.finalize` restores it from the target
+FASTA; verified byte-for-byte against 11,117 amplicons. Pass `--no-repair` to
+keep the output verbatim. `amplicon_size` is always the reported span. The new
+build emits the full sequence. When a FASTA repeats a header, the base is taken
+from the record whose sequence matches the amplicon, not from the first one.
+
+**Products crossing the origin of a circular template** are reported as
+`>16500-50`, end before start. Their size is the one the report states
+(`(120 bp)` in the new build); when the report gives none, it is computed from
+the template length.
 
 **Old build: crashes on some circular templates.** `molecular=circle` throws
 `StringIndexOutOfBoundsException` in `InSilicoPCR2.FastStart` when a binding
@@ -368,6 +386,13 @@ fast: `12S_cruzado_F_R_20260709-152709/` beats `6-pairs_20260709-152709/`.
 the run finishes. Uncheck it to inspect the tables first and export by hand;
 the *Export results* button does the same thing on demand, so pressing it twice
 gives two folders rather than clobbering one.
+
+**Partial runs are marked as such.** If a job fails, the other pairs still run;
+the failures are listed in a warning, in the log and in `run_log.txt`, because
+their pairs are missing from the tables. **Cancel** drops the queued jobs and
+stops the JAR processes that are running, so it takes effect within a second.
+A cancelled run is not auto-exported; *Export results* still saves the jobs that
+finished. Closing the window during a run asks first, then stops it.
 
 If the workbook is still open in Excel the write fails with a permission error,
 and the app says so instead of failing silently.

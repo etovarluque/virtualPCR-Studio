@@ -156,8 +156,12 @@ def _from_fasta(path: Path) -> list[PrimerPair]:
             cur.append(line)
     if cur:
         seqs.append("".join(cur))
-    if len(names) != len(seqs) or len(names) < 2:
-        raise PrimerFileError("FASTA primer file must contain an even number of records")
+    if len(names) != len(seqs):
+        raise PrimerFileError(
+            f"FASTA has {len(names)} headers but {len(seqs)} sequences; "
+            f"every '>' line needs a sequence under it")
+    if len(names) < 2:
+        raise PrimerFileError("FASTA primer file needs at least one forward/reverse pair")
     if len(names) % 2:
         raise PrimerFileError(
             f"FASTA has {len(names)} records; pairs are read two at a time"
@@ -190,12 +194,17 @@ def _common_name(fn: str, rn: str) -> str:
 def _rows_from_delimited(path: Path) -> tuple[list[str], list[list[str]]]:
     text = path.read_text(encoding="utf-8-sig", errors="replace")
     sample = text[:4096]
-    delim = "\t" if sample.count("\t") >= sample.count(",") else ","
+    # Excel under a Spanish (or any comma-decimal) locale saves CSV with ';'.
+    # Ties go to tab, then comma, as before.
+    delim = max(("\t", ",", ";"), key=sample.count)
     rows = [r for r in csv.reader(text.splitlines(), delimiter=delim) if any(c.strip() for c in r)]
     if not rows:
         raise PrimerFileError("empty primer table")
-    # A header row is one whose cells are not DNA.
-    header = rows[0] if not all(is_dna(clean_seq(c)) for c in rows[0][1:] if c.strip()) else []
+    # A row holding two primer sequences is data, whatever else it holds; a
+    # header row holds none. Testing "every cell after the first is DNA" took
+    # 'P1F | seq | P1R | seq' for a header and silently dropped that pair.
+    first_is_data = sum(is_dna(clean_seq(c)) for c in rows[0]) >= 2
+    header = [] if first_is_data else rows[0]
     body = rows[1:] if header else rows
     if not header:
         header = [""] * max(len(r) for r in body)
@@ -270,12 +279,25 @@ def _dedupe(pairs: list[PrimerPair]) -> list[PrimerPair]:
     return out
 
 
+# Spaces may group bases; tabs, commas and semicolons mean a table row.
+_SEQ_ROW = re.compile(r"[A-Za-z -]+")
+
+
 def is_fasta(path: str | Path) -> bool:
+    """A '>' header followed by a line of sequence.
+
+    A '>' alone is not enough: primer tables sometimes carry names written as
+    '>L15411F', and a row like '>P1F<TAB>ACGT...' must stay a table.
+    """
     path = Path(path)
     if path.suffix.lower() in (".xlsx", ".xls", ".xlsm"):
         return False
-    text = path.read_text(encoding="utf-8", errors="replace")
-    return any(line.lstrip().startswith(">") for line in text.splitlines())
+    text = path.read_text(encoding="utf-8-sig", errors="replace")
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if len(lines) < 2 or not lines[0].startswith(">") or "\t" in lines[0]:
+        return False
+    second = lines[1]
+    return not second.startswith(">") and bool(_SEQ_ROW.fullmatch(second))
 
 
 def read_table(path: str | Path, sheet: str | int = 0) -> tuple[list[str], list[list[str]]]:

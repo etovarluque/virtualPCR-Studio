@@ -91,10 +91,15 @@ class PrimerHit:
         printed primer base, so it is used without stripping: a blank in the
         first or last column is a real 5'/3' terminal mismatch, not padding, and
         stripping would hide exactly the terminal mismatches that matter most. It
-        is clamped to the primer length to drop any trailing pad.
+        is clamped to the primer length to drop any trailing pad, and padded back
+        to it: a writer that trims trailing whitespace would otherwise erase a
+        mismatch in the last column, which is the 3' end of a forward primer.
+        An absent match line stays empty rather than becoming all mismatches.
         """
         L = len(self.primer_seq)
-        return self.match_line[:L] if L else self.match_line.strip()
+        if not self.match_line or not L:
+            return self.match_line.strip()
+        return self.match_line[:L].ljust(L)
 
     @property
     def mismatches(self) -> int:
@@ -126,13 +131,21 @@ class Amplicon:
     `size` is the span reported by virtualPCR (end - start + 1). The JAR's
     extracted `sequence` is one base short of that: it omits the last base of
     the reverse primer binding site. Use `sequence_complete` to detect it and
-    `repair_sequence` (see parser) to restore the missing base from the target.
+    `finalize` (see parser) to restore the missing base from the target.
+
+    On a circular template a product can cross the origin, so `end < start`.
+    Its size then depends on the template length; when the report does not
+    state it, `size` is 0 until `finalize` computes it from the FASTA.
     """
     start: int
     end: int
     size: int
     ta: float | None = None   # annealing temperature, when reported
     sequence: str = ""
+
+    @property
+    def wraps_origin(self) -> bool:
+        return self.end < self.start
 
     @property
     def sequence_complete(self) -> bool:
@@ -147,6 +160,9 @@ class SequenceResult:
     amplicons: list[Amplicon] = field(default_factory=list)
     total_amplicons: int = 0
     unique_sizes: int = 0
+    # The '176bp\tTa=50' lines, kept so Ta can be attached to a product whose
+    # size is only known once the template length is (see Amplicon).
+    reported_sizes: list[tuple[int, float | None]] = field(default_factory=list)
 
     @property
     def amplified(self) -> bool:
@@ -170,6 +186,18 @@ class PairResult:
     @property
     def n_amplified(self) -> int:
         return sum(1 for s in self.sequences if s.amplified)
+
+
+# The app's own defaults, shared by the GUI and the CLI so that both routes give
+# the same result for the same inputs. Tuned for mitochondrial barcoding rather
+# than the JAR's defaults (30-3000 bp, linear), which RunConfig mirrors.
+STUDIO_DEFAULTS: dict[str, object] = {
+    "min_len": 90,
+    "max_len": 2200,
+    "n_3prime_errors": 1,
+    "circular": True,
+    "workers": 4,
+}
 
 
 @dataclass

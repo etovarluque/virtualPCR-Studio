@@ -13,7 +13,7 @@ from pathlib import Path
 
 from vpcr import JAR_DIR
 from vpcr.core.export import export_run, write_tables
-from vpcr.core.model import RunConfig
+from vpcr.core.model import STUDIO_DEFAULTS, RunConfig
 from vpcr.core.primers import combine, load_pairs, primer_set_from_pairs
 from vpcr.core.runner import JarError, run_batch
 
@@ -30,18 +30,27 @@ def main(argv: list[str] | None = None) -> int:
                     help="virtualPCR.jar (default: the one in jar/)")
     ap.add_argument("--primers", required=True, type=Path,
                     help="FASTA (F,R alternating), TSV/CSV or XLSX of pairs")
-    ap.add_argument("--sheet", default=0, help="worksheet name/index for XLSX primers")
+    ap.add_argument("--sheet", default="0",
+                    help="worksheet name, or 0-based index, for XLSX primers")
     ap.add_argument("--targets", required=True, nargs="+", type=Path)
     ap.add_argument("--out", required=True, type=Path)
-    ap.add_argument("--minlen", type=int, default=30)
-    ap.add_argument("--maxlen", type=int, default=3000)
-    ap.add_argument("--errors3", type=int, default=1, help="mismatches near the 3' end")
-    ap.add_argument("--circular", action="store_true", help="circular template")
+    # Same defaults as the GUI, so both routes give the same result.
+    d = STUDIO_DEFAULTS
+    ap.add_argument("--minlen", type=int, default=d["min_len"])
+    ap.add_argument("--maxlen", type=int, default=d["max_len"])
+    ap.add_argument("--errors3", type=int, default=d["n_3prime_errors"],
+                    help="mismatches near the 3' end")
+    topo = ap.add_mutually_exclusive_group()
+    topo.add_argument("--circular", dest="circular", action="store_true",
+                      default=d["circular"],
+                      help="circular template" + (" (default)" if d["circular"] else ""))
+    topo.add_argument("--linear", dest="circular", action="store_false",
+                      help="linear template" + ("" if d["circular"] else " (default)"))
     ap.add_argument("--probe", action="store_true")
     ap.add_argument("--no-sequence", action="store_true", help="skip amplicon sequences")
     ap.add_argument("--no-repair", action="store_true",
                     help="keep the JAR's amplicon sequences verbatim (1 base short)")
-    ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--workers", type=int, default=d["workers"])
     ap.add_argument("--heap", default=None, help="JVM max heap, e.g. 8g")
     ap.add_argument("--keep-reports", action="store_true", help="save raw .out files")
     ap.add_argument("--subfolder", action="store_true",
@@ -72,8 +81,14 @@ def main(argv: list[str] | None = None) -> int:
         print(msg, flush=True)
         log.append(msg)
 
+    if args.minlen > args.maxlen:
+        print(f"error: --minlen {args.minlen} exceeds --maxlen {args.maxlen}", file=sys.stderr)
+        return 2
+
+    # argparse hands over a string; pandas reads "1" as a sheet *named* "1".
+    sheet: str | int = int(args.sheet) if str(args.sheet).isdigit() else args.sheet
     try:
-        pairs = load_pairs(args.primers, sheet=args.sheet)
+        pairs = load_pairs(args.primers, sheet=sheet)
         if args.combine:
             pset = primer_set_from_pairs(pairs)
             pairs = combine(pset.forwards, pset.reverses)
@@ -115,6 +130,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 1
 
+    # A failed job leaves its pair out of every table; say so where the tables
+    # are archived, not only in the scrollback.
+    if results.errors:
+        say(f"\nWARNING: {len(results.errors)} of {results.total} job(s) failed; "
+            f"their pairs are missing from the tables:")
+        for pair, target, msg in results.errors:
+            say(f"  {pair} / {target}: {msg}")
+
     if not results:
         print("no results produced", file=sys.stderr)
         return 1
@@ -131,7 +154,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\ndone in {time.time() - t0:.1f}s")
     for k, v in paths.items():
         print(f"  {k}: {v}")
-    return 0
+    # Tables were written, but a partial run must not look like a clean one
+    # to a script checking the exit status.
+    return 0 if results.complete else 1
 
 
 if __name__ == "__main__":

@@ -38,6 +38,7 @@ the last block:
 from __future__ import annotations
 
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Iterator
 
@@ -59,7 +60,10 @@ def _int(s: str) -> int:
 _POSITION = re.compile(
     rf"^Position:\s+({_NUM})\s*(->|<-)\s*({_NUM})\s+([\d.]+)%\s+Tm=(-?[\d.]+)"
 )
-_AMPLICON_HDR = re.compile(rf"^>({_NUM})-({_NUM})(?:\s*\(\s*\d+\s*bp\s*\))?\s*$")
+_AMPLICON_HDR = re.compile(rf"^>({_NUM})-({_NUM})(?:\s*\(\s*({_NUM})\s*bp\s*\))?\s*$")
+# A wrapped line of amplicon sequence. Targets carry IUPAC ambiguity codes
+# (R, Y, N...), so the full alphabet is accepted, plus '-' for gaps.
+_SEQ_LINE = re.compile(r"[ACGTUNMRWSYKVHDBacgtunmrwsykvhdb-]+")
 _TOTAL = re.compile(r"^Total number of amplicons\s*=\s*(\d+)")
 _UNIQUE = re.compile(r"^Number of amplicons of unique size\s*=\s*(\d+)")
 # Newer builds name the primer pair after Ta: '176bp\tTa=50\tCYTB-F / CYTB-R'
@@ -142,8 +146,12 @@ def _parse_block(block: str) -> SequenceResult | None:
     res = SequenceResult(header=header)
     cur_name = cur_seq = ""
     pending: PrimerHit | None = None
-    amp_start = amp_end = 0
+    amp_start = amp_end = amp_size = 0
     amp_seq: list[str] = []
+    # True from an amplicon header until the first line that is not sequence:
+    # a stray line must end the sequence, not be skipped over, or the lines
+    # after it would be glued on with a gap in between.
+    in_seq = False
     sizes: list[tuple[int, float | None]] = []
 
     def flush_hit() -> None:
@@ -153,19 +161,23 @@ def _parse_block(block: str) -> SequenceResult | None:
             pending = None
 
     def flush_amplicon() -> None:
-        nonlocal amp_start, amp_end, amp_seq
+        nonlocal amp_start, amp_end, amp_size, amp_seq, in_seq
         if amp_start:
-            seq = "".join(amp_seq)
+            # Prefer the size the report states. Without it, a product that
+            # crosses the origin of a circular template (end < start) has a
+            # size that depends on the template length: 0 until finalize().
+            size = amp_size or (amp_end - amp_start + 1 if amp_end >= amp_start else 0)
             res.amplicons.append(
                 Amplicon(
                     start=amp_start,
                     end=amp_end,
-                    size=amp_end - amp_start + 1,
-                    sequence=seq,
+                    size=size,
+                    sequence="".join(amp_seq),
                 )
             )
-        amp_start = amp_end = 0
+        amp_start = amp_end = amp_size = 0
         amp_seq = []
+        in_seq = False
 
     i = start_i
     while i < len(lines):
@@ -198,13 +210,20 @@ def _parse_block(block: str) -> SequenceResult | None:
             flush_hit()
             flush_amplicon()
             amp_start, amp_end = _int(m.group(1)), _int(m.group(2))
+            amp_size = _int(m.group(3)) if m.group(3) else 0
+            in_seq = True
             i += 1
             continue
 
-        if amp_start and re.fullmatch(r"[acgtnACGTN]+", stripped or "-"):
-            amp_seq.append(stripped)
-            i += 1
-            continue
+        if in_seq:
+            if not stripped:
+                i += 1
+                continue
+            if _SEQ_LINE.fullmatch(stripped):
+                amp_seq.append(stripped)
+                i += 1
+                continue
+            in_seq = False
 
         if (m := _TOTAL.match(stripped)):
             flush_hit()
@@ -237,9 +256,10 @@ def _parse_block(block: str) -> SequenceResult | None:
 
     # Attach the reported Ta. The JAR lists one line per unique size, so keying
     # on the span is unambiguous even when two amplicons share a size.
+    res.reported_sizes = sizes
     by_size = {s: ta for s, ta in sizes}
     for amp in res.amplicons:
-        amp.ta = by_size.get(amp.size)
+        amp.ta = by_size.get(amp.size) if amp.size else None
     if not res.amplicons and sizes:
         # SequenceExtract=false: only sizes were reported.
         res.amplicons = [Amplicon(start=0, end=0, size=s, ta=ta) for s, ta in sizes]
@@ -275,10 +295,17 @@ def parse_report(
                 sequences.append(r)
     counts, elapsed = _parse_stats(trailer)
 
+    # Counted, not just tested for membership: a FASTA can carry the same
+    # header twice (duplicated GenBank records), and a copy without a block
+    # must still be reported even though its twin produced one.
     silent: list[str] = []
     if all_headers:
-        seen = {s.header for s in sequences}
-        silent = [h for h in all_headers if h not in seen]
+        seen = Counter(s.header for s in sequences)
+        for h in all_headers:
+            if seen[h]:
+                seen[h] -= 1
+            else:
+                silent.append(h)
 
     return PairResult(
         pair=pair,
@@ -315,33 +342,90 @@ def iter_fasta(path: str | Path) -> Iterator[tuple[str, str]]:
         yield header, "".join(chunks)
 
 
-def repair_sequences(result: PairResult, fasta_path: str | Path) -> int:
-    """Restore the final base the JAR drops from every extracted amplicon.
+def _template_slice(template: str, start: int, n: int) -> str:
+    """`n` bases from 1-based `start`, continuing past the end of a circle."""
+    i = start - 1
+    out = template[i:i + n]
+    if len(out) < n and template:
+        out += template[: n - len(out)]
+    return out
 
-    virtualPCR reports the amplicon span as end - start + 1 but writes only
-    end - start bases. Returns the number of amplicons repaired.
+
+def _belongs_to(seq: SequenceResult, template: str) -> bool:
+    """Whether this template is the one the sequence's amplicons came from.
+
+    Needed when a FASTA repeats a header: the reported sequence must match the
+    record it is repaired from, or the 'missing' base could come from its twin.
+    Amplicons without an extracted sequence cannot be checked and pass.
     """
-    needed = {
-        s.header: s
-        for s in result.sequences
-        if any(a.sequence and not a.sequence_complete for a in s.amplicons)
-    }
-    if not needed:
+    L = len(template)
+    for amp in seq.amplicons:
+        if amp.start > L or amp.end > L:
+            return False
+        if amp.sequence:
+            got = _template_slice(template, amp.start, len(amp.sequence))
+            if got.upper() != amp.sequence.upper():
+                return False
+    return True
+
+
+def _needs_template(seq: SequenceResult, repair: bool) -> bool:
+    return any(a.start and a.size <= 0 for a in seq.amplicons) or (
+        repair and any(a.sequence and not a.sequence_complete for a in seq.amplicons))
+
+
+def _complete_from(seq: SequenceResult, template: str, repair: bool) -> int:
+    fixed = 0
+    by_size = {s: ta for s, ta in seq.reported_sizes}
+    for amp in seq.amplicons:
+        if amp.start and amp.size <= 0 and amp.wraps_origin:
+            amp.size = len(template) - amp.start + 1 + amp.end
+            amp.ta = by_size.get(amp.size)
+        if not repair or not amp.sequence or amp.sequence_complete:
+            continue
+        if amp.size - len(amp.sequence) == 1:
+            # The base the JAR drops is the last one of the product.
+            amp.sequence += template[amp.end - 1].lower()
+            fixed += 1
+    return fixed
+
+
+def finalize(result: PairResult, fasta_path: str | Path, repair: bool = True) -> int:
+    """Fill in what the report leaves out, from the target FASTA.
+
+    * Old builds report the amplicon span as end - start + 1 but write only
+      end - start bases; with `repair`, the dropped final base is restored.
+    * A product crossing the origin of a circular template gets its size from
+      the template length, when the report did not state it.
+
+    Records are matched by header and, when a header repeats, by checking the
+    extracted sequence against each candidate record. The FASTA is only read
+    when some amplicon needs it. Returns the number of amplicons repaired.
+    """
+    pending: dict[str, list[SequenceResult]] = {}
+    for s in result.sequences:
+        if _needs_template(s, repair):
+            pending.setdefault(s.header, []).append(s)
+    if not pending:
         return 0
 
     fixed = 0
-    for header, seq in iter_fasta(fasta_path):
-        target = needed.pop(header, None)
-        if target is None:
+    for header, template in iter_fasta(fasta_path):
+        cands = pending.get(header)
+        if not cands:
             continue
-        for amp in target.amplicons:
-            if not amp.sequence or amp.sequence_complete:
-                continue
-            missing = amp.size - len(amp.sequence)
-            if missing != 1 or amp.end > len(seq):
-                continue
-            amp.sequence += seq[amp.end - 1].lower()
-            fixed += 1
-        if not needed:
-            break
+        for k, s in enumerate(cands):
+            if _belongs_to(s, template):
+                fixed += _complete_from(s, template, repair)
+                del cands[k]
+                break
+        if not cands:
+            del pending[header]
+            if not pending:
+                break
     return fixed
+
+
+def repair_sequences(result: PairResult, fasta_path: str | Path) -> int:
+    """Restore the final base the JAR drops from every extracted amplicon."""
+    return finalize(result, fasta_path, repair=True)

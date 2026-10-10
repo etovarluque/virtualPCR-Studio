@@ -130,6 +130,8 @@ def summary_table(results: Iterable[PairResult]) -> pd.DataFrame:
             "ta_median": round(float(pd.Series(tas).median()), 1) if tas else None,
             "jar_time": res.elapsed,
         })
+    if not rows:   # e.g. a run cancelled before any job finished
+        return pd.DataFrame()
     return pd.DataFrame(rows).sort_values("pct_amplified", ascending=False, ignore_index=True)
 
 

@@ -13,23 +13,94 @@ import os
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
+import threading
 import zipfile
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
 from .model import PairResult, PrimerPair, RunConfig
-from .parser import fasta_headers, parse_report, repair_sequences
+from .parser import fasta_headers, finalize, parse_report
 from .primers import write_pair_fasta
 
 # Java class file major version -> feature release (45 == Java 1.1)
 _CLASS_MAJOR_BASE = 44
 
+# Under pythonw there is no console for java.exe to inherit, so Windows would
+# open one per JAR run. Harmless elsewhere.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+
+# How often the batch looks at should_cancel while JAR runs are in flight.
+_CANCEL_POLL_S = 0.2
+
 
 class JarError(RuntimeError):
     pass
+
+
+class Cancelled(JarError):
+    """The batch was cancelled while this job was queued or running."""
+
+
+class BatchResults(list):
+    """The PairResults of a batch, plus what did not make it into them.
+
+    A plain list to every existing caller; `errors` and `cancelled` let a caller
+    tell a complete run from a partial one, which a list alone cannot show.
+    """
+
+    def __init__(self, items: Iterable[PairResult] = (), *, total: int = 0,
+                 errors: list[tuple[str, str, str]] | None = None,
+                 cancelled: bool = False) -> None:
+        super().__init__(items)
+        self.total = total
+        # (pair name, target file name, message) per failed job
+        self.errors = errors or []
+        self.cancelled = cancelled
+
+    @property
+    def complete(self) -> bool:
+        return not self.cancelled and not self.errors and len(self) == self.total
+
+
+class _Processes:
+    """JAR processes in flight, so a cancel can stop them rather than wait."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._procs: set[subprocess.Popen] = set()
+        self.cancelled = False
+
+    def run(self, cmd: list[str], cwd: Path) -> tuple[int, str, str]:
+        with self._lock:
+            # Checked under the lock: a cancel arriving now either sees this
+            # process in the set or stops it from starting.
+            if self.cancelled:
+                raise Cancelled("cancelled")
+            proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True,
+                                    errors="replace", creationflags=_NO_WINDOW)
+            self._procs.add(proc)
+        try:
+            out, err = proc.communicate()
+        finally:
+            with self._lock:
+                self._procs.discard(proc)
+        if self.cancelled:
+            raise Cancelled("cancelled")
+        return proc.returncode, out, err
+
+    def cancel(self) -> None:
+        with self._lock:
+            self.cancelled = True
+            for proc in self._procs:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
 
 
 @dataclass(frozen=True)
@@ -45,13 +116,21 @@ def _probe_java(exe: str) -> JavaInfo | None:
     except (OSError, subprocess.TimeoutExpired):
         return None
     raw = (p.stderr or p.stdout).strip()
+    # The version line, not whatever comes first: 'Picked up JAVA_TOOL_OPTIONS'
+    # and similar notices can precede it.
+    line = next((ln for ln in raw.splitlines() if " version " in ln),
+                raw.splitlines()[0] if raw else "")
     feature = 0
-    for tok in raw.replace('"', " ").split():
-        head = tok.split(".")[0]
-        if head.isdigit():
-            feature = int(head)
+    for tok in line.replace('"', " ").split():
+        parts = tok.split(".")
+        if parts[0].isdigit():
+            # Java 8 and older report '1.8.0_392': the feature is the second field.
+            if parts[0] == "1" and len(parts) > 1 and parts[1].isdigit():
+                feature = int(parts[1])
+            else:
+                feature = int(parts[0])
             break
-    return JavaInfo(exe, feature, raw.splitlines()[0] if raw else "")
+    return JavaInfo(exe, feature, line)
 
 
 def find_java(explicit: str | None = None) -> JavaInfo:
@@ -95,12 +174,22 @@ def select_java(jar: str | Path, explicit: str | None = None) -> JavaInfo:
         check_compatibility(jar, java)
         return java
     need = jar_class_version(jar)
-    java = find_java()
-    if java.feature >= need:
+    # PATH first, but its absence is not the end: a JDK installed without
+    # touching PATH is still found by discover_javas().
+    try:
+        java: JavaInfo | None = find_java()
+    except JarError:
+        java = None
+    if java is not None and java.feature >= need:
         return java
     for cand in discover_javas():
         if cand.feature >= need:
             return cand
+    if java is None:
+        raise JarError(
+            f"{Path(jar).name} needs Java {need}+ but no Java was found on PATH or "
+            f"in the usual install folders. Install a JDK {need} or newer."
+        )
     raise JarError(
         f"{Path(jar).name} needs Java {need}+ but only Java {java.feature} was found. "
         f"Install a newer JDK, or use a JAR built for Java {java.feature}."
@@ -179,12 +268,16 @@ def run_one(
     keep_report: Path | None = None,
     headers: list[str] | None = None,
     repair: bool = True,
+    processes: _Processes | None = None,
 ) -> PairResult:
     """Run the JAR for one pair against one FASTA and parse the report."""
-    # The temp dir must sit on the target's volume so the hard link succeeds and
-    # the JAR (older builds ignore output_path) writes its .out beside the link.
-    parent = task.target.parent
-    tmp = Path(tempfile.mkdtemp(prefix=".vpcr_", dir=parent))
+    # Preferably on the target's volume, so the hard link succeeds instead of
+    # copying a large FASTA. A read-only folder (a network share, a mounted
+    # archive) cannot hold it, so fall back to the system temp dir and copy.
+    try:
+        tmp = Path(tempfile.mkdtemp(prefix=".vpcr_", dir=task.target.parent))
+    except OSError:
+        tmp = Path(tempfile.mkdtemp(prefix="vpcr_"))
     try:
         stem = _safe(task.pair.name)
         target_link = tmp / f"{stem}{task.target.suffix or '.fasta'}"
@@ -204,7 +297,7 @@ def run_one(
         if heap:
             cmd[1:1] = [f"-Xmx{heap}"]
         cmd += [str(jar), str(cfg_file)]
-        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=tmp)
+        returncode, stdout, stderr = (processes or _Processes()).run(cmd, tmp)
 
         # Older builds ignore output_path and write <target>.out next to it.
         report = out_file if out_file.exists() else target_link.with_suffix(
@@ -213,13 +306,12 @@ def run_one(
         if not report.exists():
             raise JarError(
                 f"no report produced for pair {task.pair.name!r} "
-                f"(exit {proc.returncode}): {_diagnose(proc.stderr, proc.stdout)}"
+                f"(exit {returncode}): {_diagnose(stderr, stdout)}"
             )
 
         result = parse_report(report, task.pair, target_file=str(task.target),
                               all_headers=headers)
-        if repair:
-            repair_sequences(result, task.target)
+        finalize(result, task.target, repair=repair)
         if keep_report:
             keep_report.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(report, keep_report)
@@ -241,10 +333,13 @@ def run_batch(
     repair: bool = True,
     progress: Callable[[int, int, str], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
-) -> list[PairResult]:
+) -> BatchResults:
     """Run every pair against every target file, in parallel.
 
-    `progress(done, total, label)` is called from worker threads.
+    `progress(done, total, label)` is called from the calling thread. When
+    `should_cancel` turns true, queued jobs are dropped and running JAR
+    processes are killed; the jobs finished by then are returned. A job that
+    fails is recorded in the result's `errors` and does not stop the others.
     """
     # Resolved: workers run the JAR with cwd set to a temp dir, so any relative
     # path given by the caller would be interpreted against the wrong directory.
@@ -266,7 +361,18 @@ def run_batch(
     tasks = [RunTask(p, t) for t in targets for p in pairs]
     total = len(tasks)
     reports_dir = Path(reports_dir) if reports_dir else None
+    # One reports subfolder per target. Two targets can share a stem when they
+    # come from different folders; suffix the later ones so neither overwrites.
+    report_folder: dict[Path, str] = {}
+    for t in targets:
+        name, k = t.stem, 2
+        while name in report_folder.values():
+            name, k = f"{t.stem}_{k}", k + 1
+        report_folder[t] = name
 
+    processes = _Processes()
+    errors: list[tuple[str, str, str]] = []
+    cancelled = False
     # Keyed by task index so results can be restored to submission order:
     # completion order depends on thread scheduling, and callers derive folder
     # names and row order from this list.
@@ -275,25 +381,42 @@ def run_batch(
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         futures = {}
         for i, t in enumerate(tasks):
-            if should_cancel and should_cancel():
-                break
-            keep = (reports_dir / t.target.stem / f"{_safe(t.pair.name)}.out") if reports_dir else None
+            keep = (reports_dir / report_folder[t.target] / f"{_safe(t.pair.name)}.out"
+                    if reports_dir else None)
             futures[pool.submit(
-                run_one, t, jar, java, config, heap, keep, header_cache[t.target], repair
+                run_one, t, jar, java, config, heap, keep, header_cache[t.target],
+                repair, processes,
             )] = (i, t)
 
-        for fut in as_completed(futures):
-            i, t = futures[fut]
-            done += 1
-            if should_cancel and should_cancel():
-                fut.cancel()
-                continue
-            try:
-                collected[i] = fut.result()
-            except Exception as e:  # one bad pair must not kill the batch
+        # Polled rather than blocked on as_completed: a single JAR run can take
+        # minutes, and a cancel has to act while it is still going.
+        pending = set(futures)
+        while pending:
+            finished, pending = wait(pending, timeout=_CANCEL_POLL_S,
+                                     return_when=FIRST_COMPLETED)
+            if not cancelled and should_cancel and should_cancel():
+                cancelled = True
+                processes.cancel()
+                for fut in pending:
+                    fut.cancel()
                 if progress:
-                    progress(done, total, f"ERROR {t.pair.name}: {e}")
-                continue
-            if progress:
-                progress(done, total, f"{t.pair.name} / {t.target.name}")
-    return [collected[i] for i in sorted(collected)]
+                    progress(done, total, "Cancelling: stopping running jobs...")
+            for fut in finished:
+                i, t = futures[fut]
+                if fut.cancelled():
+                    continue
+                try:
+                    collected[i] = fut.result()
+                except Cancelled:
+                    continue
+                except Exception as e:  # one bad pair must not kill the batch
+                    done += 1
+                    errors.append((t.pair.name, t.target.name, str(e)))
+                    if progress:
+                        progress(done, total, f"ERROR {t.pair.name} / {t.target.name}: {e}")
+                    continue
+                done += 1
+                if progress:
+                    progress(done, total, f"{t.pair.name} / {t.target.name}")
+    return BatchResults((collected[i] for i in sorted(collected)), total=total,
+                        errors=errors, cancelled=cancelled)
