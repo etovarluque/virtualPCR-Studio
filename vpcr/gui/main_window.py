@@ -37,8 +37,8 @@ from vpcr.gui.dnd import (FASTA_SUFFIXES, JAR_SUFFIXES, DropDirLineEdit,
                           DropLineEdit, DropListWidget, DropZone)
 from vpcr.gui.primer_dialog import PrimerDialog, PrimerState
 from vpcr.gui.primer_io import load_pairs_interactive
-from vpcr.gui.widgets import (NoWheelComboBox, NoWheelSpinBox,
-                             apply_button_style)
+from vpcr.gui.widgets import (NoWheelComboBox, NoWheelDoubleSpinBox,
+                             NoWheelSpinBox, apply_button_style)
 from vpcr.core.export import (EXCEL_ROW_LIMIT, detail_table, export_run,
                               run_folder_name, summary_table, unique_dir,
                               write_tables)
@@ -46,10 +46,16 @@ from vpcr.core.model import STUDIO_DEFAULTS, PrimerPair, RunConfig
 from vpcr.core.primers import MIN_PRIMER_LEN
 from vpcr.core.runner import (JarError, discover_javas, jar_class_version,
                               run_batch, select_java)
+from vpcr.core.scoring import (DEFAULT_POLYMERASE, POLYMERASES, Reaction,
+                               resolve_ta)
 
 # Four rows of 30 px. The list used to take whatever height the panel had left
 # over — 192 px to show two files — because it carried the only stretch factor.
 TARGET_LIST_HEIGHT = 115
+
+# The Annealing Ta spin box shows "auto" at its minimum: each pair then uses its
+# own Ta from the primer file, else its lower Tm plus the polymerase's offset.
+TA_AUTO = 39.0
 
 # The single source of truth for the Parameters section: the widgets are built
 # empty and filled from here, so "Reset to defaults" cannot drift from what the
@@ -62,6 +68,8 @@ PARAM_DEFAULTS: dict[str, object] = {
     "workers": STUDIO_DEFAULTS["workers"],
     "heap": "",
     "circular": STUDIO_DEFAULTS["circular"],
+    "polymerase": POLYMERASES[DEFAULT_POLYMERASE].label,
+    "fixed_ta": TA_AUTO,
     "probe": False,
     "seqext": True,
     "keep": False,
@@ -72,13 +80,16 @@ _PARAM_LABELS = {
     "workers": "Parallel jobs", "heap": "JVM heap", "circular": "Circular template",
     "probe": "Probe search", "seqext": "Extract amplicon sequences",
     "keep": "Keep raw .out reports",
+    "polymerase": "Polymerase", "fixed_ta": "Annealing Ta",
 }
 
 
 def _fmt_default(value: object) -> str:
     if isinstance(value, bool):
         return "on" if value else "off"
-    return str(value) if value != "" else "auto"
+    if value == TA_AUTO or value == "":
+        return "auto"
+    return str(value)
 
 
 def _defaults_tooltip() -> str:
@@ -113,7 +124,16 @@ DETAIL_FILTERS: tuple[DetailFilter, ...] = (
     DetailFilter("Not amplified", lambda d: d[_col(d, "amplified") != True]),  # noqa: E712
     DetailFilter("Multi-amplicon (>1 product)", lambda d: d[_col(d, "n_amplicons") > 1]),
     DetailFilter("Multiband (>1 size)", lambda d: d[_col(d, "n_unique_sizes") > 1]),
+    # From the biological score (absent when a run was not scored).
+    DetailFilter("Likely (strong or probable)",
+                 lambda d: d[_col(d, "call").isin(["strong", "probable"])]),
+    DetailFilter("Doubtful (weak or unlikely)",
+                 lambda d: d[_col(d, "call").isin(["weak", "unlikely"])]),
 )
+
+# Background per call: green to red, light enough for black text.
+CALL_COLORS = {"strong": QColor(204, 238, 214), "probable": QColor(232, 244, 214),
+               "weak": QColor(252, 238, 204), "unlikely": QColor(250, 222, 222)}
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +172,8 @@ class DataFrameModel(QAbstractTableModel):
             col = self._df.columns[index.column()]
             if col == "amplified":
                 return QColor(219, 245, 224) if bool(value) else QColor(250, 226, 226)
+            if col == "call":
+                return CALL_COLORS.get(value)
         return None
 
     def headerData(self, section: int, orientation: Qt.Orientation,
@@ -172,22 +194,24 @@ class RunWorker(QThread):
     finished_ok = pyqtSignal(object)
     failed = pyqtSignal(str)
 
-    def __init__(self, pairs, targets, jar, config, workers, heap, reports_dir):
+    def __init__(self, pairs, targets, jar, config, workers, heap, reports_dir,
+                 reaction=None):
         super().__init__()
-        self._args = (pairs, targets, jar, config, workers, heap, reports_dir)
+        self._args = (pairs, targets, jar, config, workers, heap, reports_dir, reaction)
         self._cancel = False
 
     def cancel(self) -> None:
         self._cancel = True
 
     def run(self) -> None:
-        pairs, targets, jar, config, workers, heap, reports_dir = self._args
+        pairs, targets, jar, config, workers, heap, reports_dir, reaction = self._args
         try:
             results = run_batch(
                 pairs, targets, jar, config,
                 workers=workers, heap=heap or None, reports_dir=reports_dir,
                 progress=lambda d, t, l: self.progress.emit(d, t, l),
                 should_cancel=lambda: self._cancel,
+                reaction=reaction,
             )
             self.finished_ok.emit(results)
         except Exception as e:
@@ -264,7 +288,7 @@ class MainWindow(QMainWindow):
             elif isinstance(w, QComboBox):
                 w.setCurrentText(str(value))
             else:
-                w.setValue(int(value))
+                w.setValue(value)
 
     def _on_section_toggled(self, _expanded: bool) -> None:
         self._refresh_tail_stretch()
@@ -288,6 +312,8 @@ class MainWindow(QMainWindow):
         for w in (self.min_len, self.max_len, self.err3, self.workers):
             w.valueChanged.connect(refresh)
         self.heap.currentTextChanged.connect(refresh)
+        self.polymerase.currentTextChanged.connect(refresh)
+        self.fixed_ta.valueChanged.connect(refresh)
         for w in (self.circular, self.probe, self.seqext, self.keep):
             w.toggled.connect(refresh)
         m = self.target_list.model()
@@ -358,6 +384,9 @@ class MainWindow(QMainWindow):
                 "circular" if self.circular.isChecked() else "linear"]
         if self.probe.isChecked():
             bits.append("probe")
+        bits.append(self.polymerase.currentText().split(" (")[0])
+        if self.fixed_ta.value() != TA_AUTO:
+            bits.append(f"Ta {self.fixed_ta.value():g} °C")
         at_default = self.parameters_are_default()
         if not at_default:
             bits.append("modified")
@@ -575,6 +604,30 @@ class MainWindow(QMainWindow):
         form.addRow("3' mismatches", self.err3)
         form.addRow("Parallel jobs", self.workers)
         form.addRow("JVM heap", self.heap)
+
+        # Biological score: what the bench protocol is, so each predicted
+        # product can be graded rather than only counted.
+        self.polymerase = NoWheelComboBox()
+        for key, prof in POLYMERASES.items():
+            self.polymerase.addItem(prof.label, key)
+            self.polymerase.setItemData(self.polymerase.count() - 1, prof.note,
+                                        Qt.ItemDataRole.ToolTipRole)
+        self.polymerase.setToolTip(
+            "Polymerase used at the bench. It sets the buffer assumed for the\n"
+            "thermodynamics, how much a 3' mismatch costs, and the automatic Ta.")
+        self.fixed_ta = NoWheelDoubleSpinBox()
+        self.fixed_ta.setRange(TA_AUTO, 75.0)
+        self.fixed_ta.setDecimals(1)
+        self.fixed_ta.setSingleStep(0.5)
+        self.fixed_ta.setSuffix(" °C")
+        self.fixed_ta.setSpecialValueText("auto (per pair)")
+        self.fixed_ta.setToolTip(
+            "auto: each pair uses its own Ta (from the primer file or the\n"
+            "View/Select primers table), else its lower primer Tm - 5 °C\n"
+            "(+3 °C for high-fidelity polymerases).\n"
+            "A value here applies to pairs that have no Ta of their own.")
+        form.addRow("Polymerase", self.polymerase)
+        form.addRow("Annealing Ta", self.fixed_ta)
         form.addRow(self.circular)
         form.addRow(self.probe)
         form.addRow(self.seqext)
@@ -889,6 +942,9 @@ class MainWindow(QMainWindow):
                 f"be searched:\n\n" + "\n".join(short))
             return
 
+        ta = self.fixed_ta.value()
+        reaction = Reaction(self.polymerase.currentData() or DEFAULT_POLYMERASE,
+                            None if ta == TA_AUTO else ta)
         cfg = RunConfig(
             min_len=self.min_len.value(), max_len=self.max_len.value(),
             n_3prime_errors=self.err3.value(), circular=self.circular.isChecked(),
@@ -934,15 +990,22 @@ class MainWindow(QMainWindow):
                 self._log(f"Target    : {t}")
         else:
             self._log(f"Targets   : {len(targets)} files")
+        self._log(f"Score     : {reaction.profile.label}")
         if len(pairs) <= 50:
             for p in pairs:
-                self._log(f"Primer    : {p.name}  {p.forward} / {p.reverse}")
+                try:
+                    t, src = resolve_ta(p, reaction)
+                    ta_note = f"  Ta {t:g} °C ({src})"
+                except ImportError:   # primer3 missing: run_batch says so
+                    ta_note = ""
+                self._log(f"Primer    : {p.name}  {p.forward} / {p.reverse}{ta_note}")
         else:
             self._log(f"Primers   : {len(pairs)} pairs (see summary.csv for the full list)")
         self._log(f"Running {len(pairs)} pair(s) x {len(targets)} file(s)...")
 
         self.worker = RunWorker(pairs, targets, jar, cfg,
-                                self.workers.value(), self.heap.currentText(), reports)
+                                self.workers.value(), self.heap.currentText(), reports,
+                                reaction)
         self.worker.progress.connect(self.on_progress)
         self.worker.finished_ok.connect(self.on_finished)
         self.worker.failed.connect(self.on_failed)

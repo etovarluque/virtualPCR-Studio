@@ -25,6 +25,7 @@ FIELDS = (
     ("forward", "Forward sequence"),
     ("reverse_name", "Reverse primer name"),
     ("reverse", "Reverse sequence"),
+    ("ta", "Annealing Ta (°C)"),
 )
 REQUIRED = ("forward", "reverse")
 
@@ -68,8 +69,8 @@ class ColumnMapDialog(QDialog):
 
         right = QVBoxLayout()
         right.addWidget(QLabel("Preview"))
-        self.preview = QTableWidget(0, 3)
-        self.preview.setHorizontalHeaderLabels(["Pair", "Forward", "Reverse"])
+        self.preview = QTableWidget(0, 4)
+        self.preview.setHorizontalHeaderLabels(["Pair", "Forward", "Reverse", "Ta"])
         self.preview.horizontalHeader().setStretchLastSection(True)
         right.addWidget(self.preview, 1)
         self.status = QLabel("")
@@ -115,7 +116,8 @@ class ColumnMapDialog(QDialog):
 
         self.preview.setRowCount(len(self.pairs))
         for r, p in enumerate(self.pairs):
-            for c, val in enumerate((p.name, p.forward, p.reverse)):
+            ta = "" if p.ta is None else f"{p.ta:g}"
+            for c, val in enumerate((p.name, p.forward, p.reverse, ta)):
                 item = QTableWidgetItem(val)
                 item.setFlags(Qt.ItemFlag.ItemIsEnabled)
                 self.preview.setItem(r, c, item)

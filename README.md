@@ -55,6 +55,7 @@ vpcr_app/
       runner.py         locating java, running the JAR, parallel batches
       parser.py         reading .out reports
       export.py         summary / detail tables, Excel + CSV
+      scoring.py        biological score of each predicted amplicon
     gui/
       main_window.py    the application
       primer_dialog.py  the Manage primers window, and the primer state it edits
@@ -149,7 +150,7 @@ keyboard or the arrows to set them.
 
 ## Requirements
 
-* Python 3.10+, `PyQt6`, `pandas`, `openpyxl` (`Run vPCR.bat` installs these)
+* Python 3.10+, `PyQt6`, `pandas`, `openpyxl`, `primer3-py` (`Run vPCR.bat` installs these)
 * A JRE. **Check which one:** `dist/virtualPCR.jar` in the upstream repo is
   compiled for Java 25 and will not start on Java 24. The older
   `vPCR/virtualPCR.jar` targets Java 23. *Help → Java / JAR info* reports both
@@ -335,6 +336,58 @@ within a study.** Ask the author for the engine source — GPLv3 entitles you to
 
 Prefer the new build: it fixes the two bugs below and does not crash on
 circular templates. `Help → Java / JAR info` shows what is installed.
+
+## Biological score
+
+The JAR answers *amplified or not* from mismatch counts. On top of that, every
+predicted product gets a graded answer: **how many PCR cycles later than a
+perfectly matched assay would it show up?** The score does not search for
+sites; it grades the sites the JAR found, so the two layers stay comparable.
+
+For each primer binding site:
+
+* **Binding.** Nearest-neighbour free energy of the primer–template duplex at
+  the annealing temperature, mismatches included (SantaLucia & Hicks 2004, via
+  `primer3-py`), turned into the fraction of sites occupied by primer.
+* **Degeneracy.** A primer with degeneracy *D* is *D* oligos at *C/D* each; only
+  the variant matching the site binds it well. `L15411F` (×96) binds a perfect
+  site at about two thirds the occupancy of a non-degenerate primer.
+* **Extension.** A mismatch near the 3' end hinders the polymerase beyond its
+  cost in binding, by position and type: purine·purine and C·C at the 3'
+  terminus are the worst, T-containing ones mild (Kwok et al. 1990;
+  Stadhouders et al. 2010). Past the fifth base only binding is affected.
+
+The two sites combine into `delta_cq`, the estimated delay in cycles, and a
+`call`: **strong** (≤ 2), **probable** (≤ 5), **weak** (≤ 10), **unlikely**.
+Mismatches only matter in the first cycles; after that the primer is part of
+the template.
+
+**Polymerase.** *OneTaq (NEB)* is the default: a Taq + Deep Vent blend whose
+3'→5' exonuclease can trim a 3' mismatch, so terminal mismatches cost it less
+than Taq alone. *Taq* and *High-fidelity (Q5, Phusion)* are the other profiles.
+Each sets the buffer used for the thermodynamics (OneTaq Standard buffer:
+44 mM monovalent, 1.8 mM Mg²⁺, 0.2 µM primers).
+
+**Annealing temperature, per pair.** Assays differ by marker, so each pair is
+scored at its own Ta, in this order:
+
+1. the pair's own Ta — a `Ta`, `Annealing` or `Anillamiento` column in the
+   primer file, or the *Ta °C* column in *View/Select primers*;
+2. *Annealing Ta* in Parameters, when set (CLI: `--ta`);
+3. otherwise the lower primer Tm − 5 °C (+3 °C for high-fidelity), NEB's rule.
+
+`summary.csv` records the polymerase, the Ta and where it came from, the count
+per call and `pct_likely` (strong + probable). `detail.csv` adds per site
+`dg`, `bound`, `ext3`, `efficiency` and `mismatch_detail` (`3'+0 C·A` = the
+3'-terminal base, primer C facing template A). The Alignment tab shows the same.
+*Detail rows* filters on *Likely* and *Doubtful*. CLI: `--polymerase`, `--ta`,
+and `--no-score` for the JAR's predictions alone.
+
+**Read the calls as a ranking of risk, not as probabilities.** The
+thermodynamics are standard, but the extension weights are literature-informed
+starting values, not yet calibrated. Calibrating them against the lab's own
+PCR outcomes (which primer pair amplified which species) is what will turn the
+score into a prediction with a known error rate.
 
 ## Quirks the core compensates for
 

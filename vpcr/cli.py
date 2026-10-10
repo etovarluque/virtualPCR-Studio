@@ -16,6 +16,7 @@ from vpcr.core.export import export_run, write_tables
 from vpcr.core.model import STUDIO_DEFAULTS, RunConfig
 from vpcr.core.primers import combine, load_pairs, primer_set_from_pairs
 from vpcr.core.runner import JarError, run_batch
+from vpcr.core.scoring import DEFAULT_POLYMERASE, POLYMERASES, Reaction, resolve_ta
 
 
 def _default_jar() -> Path | None:
@@ -60,6 +61,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--combine", action="store_true",
                     help="run every forward against every reverse, ignoring the "
                          "file's own pairing")
+    ap.add_argument("--polymerase", choices=sorted(POLYMERASES), default=DEFAULT_POLYMERASE,
+                    help="polymerase profile for the biological score "
+                         f"(default: {DEFAULT_POLYMERASE})")
+    ap.add_argument("--ta", type=float, default=None,
+                    help="annealing temperature for every pair, in C (default: "
+                         "each pair's own Ta from the primer file, else its lower "
+                         "Tm plus the polymerase's offset)")
+    ap.add_argument("--no-score", action="store_true",
+                    help="report the JAR's predictions only, without the biological score")
     ap.add_argument("--java", default=None)
     ap.add_argument("--header-fields", default=None,
                     help="comma-separated names to split the FASTA header into, "
@@ -109,8 +119,21 @@ def main(argv: list[str] | None = None) -> int:
         f"{', probe search' if cfg.probe else ''}")
     for t in args.targets:
         say(f"Target    : {t}")
+    reaction = None if args.no_score else Reaction(args.polymerase, args.ta)
+    if reaction is not None:
+        try:
+            import primer3  # noqa: F401
+        except ImportError:
+            print("error: the biological score needs primer3-py "
+                  "(pip install primer3-py), or pass --no-score", file=sys.stderr)
+            return 2
+        say(f"Score     : {reaction.profile.label}")
     for p in pairs:
-        say(f"Primer    : {p.name}  {p.forward} / {p.reverse}")
+        ta = ""
+        if reaction is not None:
+            t, src = resolve_ta(p, reaction)
+            ta = f"  Ta {t:g} C ({src})"
+        say(f"Primer    : {p.name}  {p.forward} / {p.reverse}{ta}")
 
     total = len(pairs) * len(args.targets)
     t0 = time.time()
@@ -124,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
             pairs, args.targets, args.jar, cfg,
             java_path=args.java, workers=args.workers, heap=args.heap,
             reports_dir=(args.out / "reports") if args.keep_reports else None,
-            repair=not args.no_repair, progress=progress,
+            repair=not args.no_repair, progress=progress, reaction=reaction,
         )
     except JarError as e:
         print(f"error: {e}", file=sys.stderr)

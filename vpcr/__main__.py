@@ -13,7 +13,7 @@ from pathlib import Path
 
 from vpcr import APP_ROOT
 
-REQUIRED = ("PyQt6", "pandas", "openpyxl")
+REQUIRED = ("PyQt6", "pandas", "openpyxl", "primer3")
 
 _MB_ICONERROR = 0x10
 

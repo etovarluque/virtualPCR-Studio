@@ -172,6 +172,12 @@ def _alignment_block(role: str, hit: PrimerHit) -> str:
     head = (f"<b>{escape(role)}</b> &nbsp; {escape(hit.primer_name or '?')} &nbsp; "
             f"pos {hit.start:,}&ndash;{hit.end:,} &nbsp; {hit.identity:g}% id &nbsp; "
             f"Tm {hit.tm:g}&deg;C &nbsp; <span style='color:#555'>{mm_note}</span>")
+    if (sc := hit.score) is not None:
+        head += (f"<br><span style='color:#555'>score: &Delta;G {sc.dg:g} kcal/mol"
+                 f" &middot; bound {100 * sc.bound:.0f}%"
+                 f" &middot; 3&prime; extension &times;{sc.extension:.2f}"
+                 + (f" &middot; degeneracy {sc.degeneracy}" if sc.degeneracy > 1 else "")
+                 + "</span>")
     return (f"<div style='margin:6px 0 2px'>{head}</div>"
             f"<pre style='margin:0 0 10px;font-family:Consolas,\"DejaVu Sans Mono\","
             f"monospace;font-size:12px;line-height:1.35'>{body}</pre>")
@@ -192,8 +198,10 @@ def _wrap_sequence(cells: list[tuple[str, str]], start: int, width: int = 60) ->
 def _product_map(amp: Amplicon, fwd: PrimerHit | None, rev: PrimerHit | None) -> str:
     seq = (amp.sequence or "").upper()
     ta = f", Ta={amp.ta:g}&deg;C" if amp.ta is not None else ""
+    call = (f" &nbsp; <b>{escape(amp.call)}</b> (+{amp.delta_cq:g} cycles)"
+            if amp.call and amp.delta_cq is not None else "")
     head = (f"<div style='margin:4px 0'><b>Amplicon</b> &nbsp; {amp.size:,} bp"
-            f"{ta} &nbsp; <span style='color:#555'>pos {amp.start:,}&ndash;"
+            f"{ta}{call} &nbsp; <span style='color:#555'>pos {amp.start:,}&ndash;"
             f"{amp.end:,}</span></div>")
     if not seq:
         return (head + "<p style='color:#777'><i>No product sequence available "

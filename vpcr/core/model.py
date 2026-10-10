@@ -41,6 +41,9 @@ class PrimerPair:
     reverse_name: str = ""
     marker: str = ""          # optional free-text label (12S, COI, ...)
     expected_size: str = ""   # optional, as reported by the assay author
+    # The protocol's annealing temperature for this pair, when known. Assays
+    # differ by marker, so it travels with the pair; None means "work it out".
+    ta: float | None = None
 
     def __post_init__(self) -> None:
         if not self.forward or not self.reverse:
@@ -83,6 +86,8 @@ class PrimerHit:
     tm: float                 # degrees C
     match_line: str = ""      # the '|||:|| ' line of the alignment
     target_context: str = ""  # target sequence around the binding site
+    # Filled by scoring.score_result: how well this site primes (SiteScore).
+    score: object | None = None
 
     def _footprint(self) -> str:
         """Match symbols aligned one-per-base to the primer, in printed order.
@@ -142,6 +147,10 @@ class Amplicon:
     size: int
     ta: float | None = None   # annealing temperature, when reported
     sequence: str = ""
+    # Filled by scoring.score_result. delta_cq is the estimated delay, in PCR
+    # cycles, relative to perfectly matched primers; call is its category.
+    delta_cq: float | None = None
+    call: str = ""
 
     @property
     def wraps_origin(self) -> bool:
@@ -182,6 +191,11 @@ class PairResult:
     elapsed: str = ""
     # Headers present in the FASTA that produced no output block at all.
     silent_headers: list[str] = field(default_factory=list)
+    # Set when the result was scored: the annealing temperature used, where it
+    # came from ('pair', 'fixed' or 'auto'), and the polymerase profile.
+    score_ta: float | None = None
+    score_ta_source: str = ""
+    score_polymerase: str = ""
 
     @property
     def n_amplified(self) -> int:

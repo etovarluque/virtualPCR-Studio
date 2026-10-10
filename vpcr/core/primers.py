@@ -75,11 +75,29 @@ def _dna_columns(n_cols: int, rows: Sequence[Sequence[str]]) -> list[int]:
 _SIZE_HINT = re.compile(r"(size|tama|length|longitud|\bbp\b)", re.I)
 
 
+# An annealing temperature column: 'Ta', 'Ta (°C)', 'Annealing', 'Anillamiento'.
+_TA_HINT = re.compile(r"(^\s*t\.?\s*a\.?\b|anneal|anillamiento|hibridaci)", re.I)
+TA_RANGE = (35.0, 80.0)
+
+
+def parse_ta(value: object) -> float | None:
+    """A cell as an annealing temperature in C, or None. Accepts '55,5' and '55 °C'."""
+    m = re.search(r"\d+(?:[.,]\d+)?", str(value or ""))
+    if not m:
+        return None
+    t = float(m.group().replace(",", "."))
+    return t if TA_RANGE[0] <= t <= TA_RANGE[1] else None
+
+
+def _numeric(vals: Sequence[str]) -> bool:
+    return all(re.fullmatch(r"[\d.,\s°Cc-]+", v) for v in vals)
+
+
 def _looks_like_names(values: Sequence[str], header: str = "") -> bool:
-    if _SIZE_HINT.search(header):
+    if _SIZE_HINT.search(header) or _TA_HINT.search(header):
         return False
     vals = [str(v).strip() for v in values if str(v).strip()]
-    if not vals:
+    if not vals or _numeric(vals):
         return False
     return sum(1 for v in vals if len(v) <= 40) / len(vals) >= 0.8
 
@@ -135,6 +153,15 @@ def detect_columns(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> dic
             if _looks_like_names([r[j] for r in rows if j < len(r)], hdr[j]):
                 cols["name"] = j
                 break
+
+    # Ta by header only: a column of numbers could as well be a size or a Tm.
+    for j, h in enumerate(hdr):
+        if j in dna_cols or j in cols.values() or not _TA_HINT.search(h):
+            continue
+        vals = [r[j] for r in rows if j < len(r) and str(r[j]).strip()]
+        if vals and sum(parse_ta(v) is not None for v in vals) / len(vals) >= 0.6:
+            cols["ta"] = j
+            break
     return cols
 
 
@@ -229,6 +256,7 @@ def _pairs_from_rows(
     fni, rni, r2ni = (cols.get(k) for k in ("forward_name", "reverse_name",
                                             "reverse_extra_name"))
     ni = cols.get("name")
+    tai = cols.get("ta")
 
     pairs: list[PrimerPair] = []
     for n, row in enumerate(rows, 1):
@@ -245,15 +273,16 @@ def _pairs_from_rows(
             name = get(ni).strip().lstrip(">")
         else:
             name = f"pair_{n}"
+        ta = parse_ta(get(tai)) if tai is not None else None
         pairs.append(PrimerPair(name=name, forward=f, reverse=r,
-                                forward_name=fname, reverse_name=rname))
+                                forward_name=fname, reverse_name=rname, ta=ta))
 
         r2 = clean_seq(get(r2i))
         if is_dna(r2):
             r2name = get(r2ni).strip().lstrip(">")
             name2 = _common_name(fname, r2name) if (fname and r2name) else f"{name}_R2"
             pairs.append(PrimerPair(name=name2, forward=f, reverse=r2,
-                                    forward_name=fname, reverse_name=r2name))
+                                    forward_name=fname, reverse_name=r2name, ta=ta))
     if not pairs:
         raise PrimerFileError("no valid primer pairs found")
     return _dedupe(pairs)
@@ -273,7 +302,7 @@ def _dedupe(pairs: list[PrimerPair]) -> list[PrimerPair]:
             name, i = f"{base}_{i}", i + 1
         used.add(name)
         p2 = PrimerPair(name, p.forward, p.reverse, p.forward_name, p.reverse_name,
-                        p.marker, p.expected_size)
+                        p.marker, p.expected_size, p.ta)
         seen_seq[key] = p2
         out.append(p2)
     return out

@@ -10,6 +10,7 @@ group is assay-specific and therefore opt-in via `header_fields`.
 """
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -17,6 +18,7 @@ from typing import Iterable, Sequence
 import pandas as pd
 
 from .model import Amplicon, PairResult, PrimerHit, PrimerPair, SequenceResult
+from .scoring import CALLS, best_amplicon
 
 # Detail rows past which export writes CSV only: openpyxl grows slow and memory-
 # hungry as it approaches Excel's 1,048,576-row ceiling, and detail.csv already
@@ -29,6 +31,23 @@ def _flanking(seq: SequenceResult, amp: Amplicon) -> tuple[PrimerHit | None, Pri
     fwd = next((h for h in seq.hits_for("forward") if h.start == amp.start), None)
     rev = next((h for h in seq.hits_for("reverse") if h.end == amp.end), None)
     return fwd, rev
+
+
+_SCORE_KEYS = ("dg", "bound", "ext3", "efficiency", "mismatch_detail")
+
+
+def _score_cols(prefix: str, h: PrimerHit | None) -> dict[str, object]:
+    """The biological score of one site (scoring.SiteScore), when it has one."""
+    sc = getattr(h, "score", None)
+    if sc is None:
+        return {f"{prefix}_{k}": None for k in _SCORE_KEYS}
+    return {
+        f"{prefix}_dg": sc.dg,
+        f"{prefix}_bound": round(sc.bound, 3),
+        f"{prefix}_ext3": round(sc.extension, 3),
+        f"{prefix}_efficiency": round(sc.efficiency, 3),
+        f"{prefix}_mismatch_detail": sc.mismatches,
+    }
 
 
 def _hit_cols(prefix: str, h: PrimerHit | None) -> dict[str, object]:
@@ -66,6 +85,7 @@ def detail_table(
 ) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     for res in results:
+        scored = res.score_ta is not None
         base = {"pair": res.pair.name, "target_file": Path(res.target_file).name}
         for seq in res.sequences:
             hdr = {"header": seq.header, **_split_header(seq.header, header_fields, header_sep)}
@@ -87,6 +107,9 @@ def detail_table(
                     "ta": amp.ta,
                     **_hit_cols("f", f), **_hit_cols("r", r),
                 }
+                if scored:
+                    row.update({"delta_cq": amp.delta_cq, "call": amp.call or None,
+                                **_score_cols("f", f), **_score_cols("r", r)})
                 if include_sequence:
                     row["amplicon_seq"] = amp.sequence.upper()
                     row["seq_complete"] = amp.sequence_complete
@@ -113,7 +136,7 @@ def summary_table(results: Iterable[PairResult]) -> pd.DataFrame:
         # sizes are resolvable, so the two counts answer different questions.
         multi_amplicon = sum(1 for s in amplified if s.total_amplicons > 1)
         multiband = sum(1 for s in amplified if s.unique_sizes > 1)
-        rows.append({
+        row: dict[str, object] = {
             "pair": res.pair.name,
             "forward": res.pair.forward,
             "reverse": res.pair.reverse,
@@ -129,7 +152,20 @@ def summary_table(results: Iterable[PairResult]) -> pd.DataFrame:
             "size_max": max(sizes) if sizes else None,
             "ta_median": round(float(pd.Series(tas).median()), 1) if tas else None,
             "jar_time": res.elapsed,
-        })
+        }
+        if res.score_ta is not None:
+            # One call per sequence: its most likely product decides.
+            calls = Counter(b.call for s in amplified
+                            if (b := best_amplicon(s)) is not None and b.call)
+            likely = calls["strong"] + calls["probable"]
+            row.update({
+                "score_polymerase": res.score_polymerase,
+                "score_ta": res.score_ta,
+                "score_ta_source": res.score_ta_source,
+                **{f"n_{c}": calls[c] for c in CALLS},
+                "pct_likely": round(100 * likely / n_total, 2) if n_total else 0.0,
+            })
+        rows.append(row)
     if not rows:   # e.g. a run cancelled before any job finished
         return pd.DataFrame()
     return pd.DataFrame(rows).sort_values("pct_amplified", ascending=False, ignore_index=True)

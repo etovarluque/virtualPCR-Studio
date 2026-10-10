@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (QDialog, QDialogButtonBox, QHBoxLayout,
 
 from vpcr import APP_NAME
 from vpcr.core.model import Primer, PrimerPair
-from vpcr.core.primers import combine, primer_set_from_pairs
+from vpcr.core.primers import combine, parse_ta, primer_set_from_pairs
 from vpcr.gui.primer_io import load_pairs_interactive
 
 # Every pair is a separate JAR run over every target, so a large cartesian
@@ -161,12 +161,16 @@ class PrimerDialog(QDialog):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(QLabel("<b>Pairs to run</b>"))
 
-        self.pair_table = QTableWidget(0, 4)
-        self.pair_table.setHorizontalHeaderLabels(["Use", "Name", "Forward", "Reverse"])
+        self.pair_table = QTableWidget(0, 5)
+        self.pair_table.setHorizontalHeaderLabels(["Use", "Name", "Forward", "Reverse", "Ta °C"])
+        self.pair_table.horizontalHeaderItem(4).setToolTip(
+            "This pair's annealing temperature. Leave blank to use the run's\n"
+            "setting (by default: lower primer Tm - 5 °C).")
         hh = self.pair_table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         hh.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         # It numbers rows the user never refers to by number, and costs width.
         self.pair_table.verticalHeader().setVisible(False)
         lay.addWidget(self.pair_table, 1)
@@ -214,7 +218,7 @@ class PrimerDialog(QDialog):
         try:
             self.pair_table.setRowCount(0)
             for pair, used in zip(state.pairs, state.used):
-                self.add_pair_row(pair.name, pair.forward, pair.reverse, used)
+                self.add_pair_row(pair.name, pair.forward, pair.reverse, used, pair.ta)
         finally:
             self.pair_table.blockSignals(False)
         # Pair names join both primers ('MiFish-U-F|MiFish-U-R') and are the
@@ -223,7 +227,10 @@ class PrimerDialog(QDialog):
         self._refresh_all_toggles()
 
     def current_state(self) -> PrimerState:
-        """Read the tables back. Rows missing a sequence are dropped."""
+        """Read the tables back. Rows missing a sequence are dropped.
+
+        A Ta that is not a plausible annealing temperature reads as blank.
+        """
         pairs: list[PrimerPair] = []
         used: list[bool] = []
         for r in range(self.pair_table.rowCount()):
@@ -232,7 +239,8 @@ class PrimerDialog(QDialog):
             if not (fwd and rev):
                 continue
             pairs.append(PrimerPair(name=name or f"pair_{r + 1}",
-                                    forward=fwd, reverse=rev))
+                                    forward=fwd, reverse=rev,
+                                    ta=parse_ta(self._cell(r, 4))))
             used.append(_is_checked(self.pair_table, r))
         return PrimerState(list(self.state.forwards), list(self.state.reverses),
                            pairs, used)
@@ -357,11 +365,12 @@ class PrimerDialog(QDialog):
         self._refresh_all_toggles()
 
     def add_pair_row(self, name: str = "", fwd: str = "", rev: str = "",
-                     used: bool = True) -> None:
+                     used: bool = True, ta: float | None = None) -> None:
         r = self.pair_table.rowCount()
         self.pair_table.insertRow(r)
         self.pair_table.setItem(r, 0, _check_item(used))
-        for c, val in enumerate((name, fwd, rev), start=1):
+        for c, val in enumerate((name, fwd, rev, "" if ta is None else f"{ta:g}"),
+                                start=1):
             self.pair_table.setItem(r, c, QTableWidgetItem(val))
 
     def remove_pair_rows(self) -> None:

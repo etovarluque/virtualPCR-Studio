@@ -25,6 +25,7 @@ from typing import Callable, Iterable
 from .model import PairResult, PrimerPair, RunConfig
 from .parser import fasta_headers, finalize, parse_report
 from .primers import write_pair_fasta
+from .scoring import Reaction, score_result
 
 # Java class file major version -> feature release (45 == Java 1.1)
 _CLASS_MAJOR_BASE = 44
@@ -269,6 +270,7 @@ def run_one(
     headers: list[str] | None = None,
     repair: bool = True,
     processes: _Processes | None = None,
+    reaction: Reaction | None = None,
 ) -> PairResult:
     """Run the JAR for one pair against one FASTA and parse the report."""
     # Preferably on the target's volume, so the hard link succeeds instead of
@@ -312,6 +314,8 @@ def run_one(
         result = parse_report(report, task.pair, target_file=str(task.target),
                               all_headers=headers)
         finalize(result, task.target, repair=repair)
+        if reaction is not None:
+            score_result(result, task.target, reaction)
         if keep_report:
             keep_report.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(report, keep_report)
@@ -333,6 +337,7 @@ def run_batch(
     repair: bool = True,
     progress: Callable[[int, int, str], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    reaction: Reaction | None = None,
 ) -> BatchResults:
     """Run every pair against every target file, in parallel.
 
@@ -340,6 +345,9 @@ def run_batch(
     `should_cancel` turns true, queued jobs are dropped and running JAR
     processes are killed; the jobs finished by then are returned. A job that
     fails is recorded in the result's `errors` and does not stop the others.
+
+    With a `reaction`, every predicted amplicon is also scored biologically
+    (see scoring.py); without one, the results are the JAR's alone.
     """
     # Resolved: workers run the JAR with cwd set to a temp dir, so any relative
     # path given by the caller would be interpreted against the wrong directory.
@@ -356,6 +364,12 @@ def run_batch(
     pairs = list(pairs)
     if not pairs:
         raise JarError("no primer pairs given")
+    if reaction is not None:
+        try:
+            import primer3  # noqa: F401
+        except ImportError as e:
+            raise JarError("scoring needs the primer3-py package: "
+                           "pip install primer3-py") from e
 
     header_cache = {t: fasta_headers(t) for t in targets}
     tasks = [RunTask(p, t) for t in targets for p in pairs]
@@ -385,7 +399,7 @@ def run_batch(
                     if reports_dir else None)
             futures[pool.submit(
                 run_one, t, jar, java, config, heap, keep, header_cache[t.target],
-                repair, processes,
+                repair, processes, reaction,
             )] = (i, t)
 
         # Polled rather than blocked on as_completed: a single JAR run can take
