@@ -142,10 +142,20 @@ headline numbers, and they carry the next step as a button: *Open folder* after
 an export, *Show log* when jobs fail, *View/Select primers* after a file loads.
 Successes and information leave after five seconds, warnings after nine;
 errors, and the warning about failed jobs, stay until closed so a partial
-result is never missed. Hovering a toast holds it. A missing input also opens
-the form that fixes it: *Run* with no targets opens the Targets drawer, with
-no JAR the Parameters drawer. Message boxes remain for what needs an answer —
-quitting during a run — and inside the primer windows, which are modal.
+result is never missed. Hovering a toast holds it. Message boxes remain for
+what needs an answer — quitting during a run — and inside the primer windows,
+which are modal.
+
+**Run checks the setup in strip order** and reports the first problem, opening
+the form that fixes it:
+
+1. *Targets* — at least one FASTA, and every listed file still on disk;
+2. *Primers* — a file loaded, at least one pair ticked, no primer shorter than
+   12 nt;
+3. *Parameters* — min amplicon not above max, max not shorter than any pair's
+   two primers together (no product could fit), and a JAR when a JAR engine is
+   chosen;
+4. *Output* — the folder can be written, when the run will write there.
 
 **Summary at a glance.** Above the summary table, four cards: how many
 sequences were searched (once per file, however many pairs), the best pair and

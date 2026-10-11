@@ -1313,37 +1313,16 @@ class MainWindow(QMainWindow):
         pairs = self.collect_pairs()
 
         engine = self.engine.currentData() or "jar"
-        # Each problem opens the form that fixes it, and says so in a toast.
-        problem = (
-            ("parameters", "Select a valid virtualPCR.jar, or choose the built-in engine.")
-            if engine != "thermo" and (not jar or not Path(jar).exists()) else
-            ("targets", "Add at least one FASTA target.") if not targets else
-            ("primers", "Add at least one primer pair.") if not pairs else
-            ("parameters", "Min amplicon length exceeds max.")
-            if self.min_len.value() > self.max_len.value() else None)
-        if problem is None and (self.keep.isChecked() or self.auto_export.isChecked()):
-            # Checked again now: a network drive may have gone since it was set.
-            oc = self._check_output()
-            if not oc.ok:
-                problem = ("output", f"The output folder cannot be used: {oc.message}.")
+        problem = self._run_problem(targets, pairs, jar, engine)
         if problem is not None:
-            self.open_section(problem[0])
-            self.toasts.show("warning", problem[1])
+            section, message = problem
+            # The form that fixes it opens, and a toast says what to fix.
+            self.open_section(section)
+            actions = [("View/Select primers", self.manage_primers)] if section == "primers" \
+                and self.primers.pairs else []
+            self.toasts.show("warning", message, actions)
             return
         self.open_section(None)
-
-        # The JAR silently discards primers shorter than this and then fails
-        # with 'Failed to open primer's file', which explains nothing.
-        short = [f"{p.name}: {p.forward} / {p.reverse}" for p in pairs
-                 if min(len(p.forward), len(p.reverse)) < MIN_PRIMER_LEN]
-        if short:
-            more = f"\n…and {len(short) - 3} more" if len(short) > 3 else ""
-            self.toasts.show(
-                "warning",
-                f"These primers are shorter than {MIN_PRIMER_LEN} nt and cannot "
-                f"be searched:\n" + "\n".join(short[:3]) + more,
-                [("View/Select primers", self.manage_primers)])
-            return
 
         ta = self.fixed_ta.value()
         reaction = Reaction(self.polymerase.currentData() or DEFAULT_POLYMERASE,
@@ -1418,6 +1397,59 @@ class MainWindow(QMainWindow):
         self.worker.finished_ok.connect(self.on_finished)
         self.worker.failed.connect(self.on_failed)
         self.worker.start()
+
+    def _run_problem(self, targets: list[str], pairs: list[PrimerPair], jar: str,
+                     engine: str) -> tuple[str, str] | None:
+        """The first thing that stops a run, as (section, message), or None.
+
+        Checked in the order the setup is filled in, left to right along the
+        strip: targets, primers, parameters, output. The first problem is
+        the one reported, so the message always names the next thing to do.
+        """
+        # 1. Targets
+        if not targets:
+            return "targets", "Add at least one FASTA target."
+        gone = [Path(t).name for t in targets if not Path(t).is_file()]
+        if gone:
+            more = f" and {len(gone) - 2} more" if len(gone) > 2 else ""
+            return "targets", (f"{len(gone)} target file(s) no longer exist: "
+                               f"{', '.join(gone[:2])}{more}. Remove or re-add them.")
+
+        # 2. Primers
+        if self.primers.is_empty:
+            return "primers", "Load a primer file."
+        if not pairs:
+            return "primers", "Tick at least one primer pair in View/Select primers."
+        # The JAR silently discards primers shorter than this and then fails
+        # with 'Failed to open primer's file', which explains nothing.
+        short = [f"{p.name}: {p.forward} / {p.reverse}" for p in pairs
+                 if min(len(p.forward), len(p.reverse)) < MIN_PRIMER_LEN]
+        if short:
+            more = f"\n…and {len(short) - 3} more" if len(short) > 3 else ""
+            return "primers", (f"These primers are shorter than {MIN_PRIMER_LEN} nt and "
+                               f"cannot be searched:\n" + "\n".join(short[:3]) + more)
+
+        # 3. Parameters
+        lo, hi = self.min_len.value(), self.max_len.value()
+        if lo > hi:
+            return "parameters", f"Min amplicon ({lo} bp) is larger than max ({hi} bp)."
+        # A product spans both primers, so a pair longer than the maximum
+        # can never be found, and the run would report it as not amplifying.
+        too_long = [p.name for p in pairs if len(p.forward) + len(p.reverse) > hi]
+        if too_long:
+            return "parameters", (f"Max amplicon ({hi} bp) is shorter than the primers of "
+                                  f"{', '.join(too_long[:2])} together; no product could fit.")
+        if engine != "thermo" and (not jar or not Path(jar).exists()):
+            return "parameters", ("No virtualPCR.jar found. Select it under Run, or choose "
+                                  "the built-in engine.")
+
+        # 4. Output: only when the run will write there. Checked afresh: a
+        # network drive may have gone since the folder was chosen.
+        if self.keep.isChecked() or self.auto_export.isChecked():
+            oc = self._check_output()
+            if not oc.ok:
+                return "output", f"The output folder cannot be used: {oc.message}."
+        return None
 
     def cancel_run(self) -> None:
         if self.worker:
