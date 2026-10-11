@@ -120,6 +120,13 @@ sizes that vary between species spread into a short smear. Hover a lane for
 its numbers; click it to select its row. The gel stays dark in both themes, as
 on a transilluminator.
 
+**Expand** (or a double click on the gel) opens it in a window of its own,
+which can be resized, maximised or moved to a second screen, and follows every
+new run. There, **−** / **+** / **Fit**, Ctrl + wheel or Ctrl +/− zoom the gel;
+**Size range** shows only a window of sizes (say 85–200 bp), so variants a few
+bp apart separate into distinct bands, with finer ticks on the axis; and
+**Copy** / **Save PNG…** take the gel into a report as it is shown.
+
 **Light and dark.** The button at the right of the menu bar switches theme;
 *View → Theme* also offers *Follow Windows*, the default, which tracks the
 Windows app setting live. Every colour comes from one set of tokens in
