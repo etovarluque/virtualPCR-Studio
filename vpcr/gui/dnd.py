@@ -18,7 +18,7 @@ from PyQt6 import sip
 from PyQt6.QtCore import QEvent, Qt, pyqtSignal
 from PyQt6.QtGui import (QColor, QDragEnterEvent, QDragLeaveEvent,
                          QDragMoveEvent, QDropEvent, QPalette)
-from PyQt6.QtWidgets import (QFrame, QLabel, QLineEdit, QListWidget,
+from PyQt6.QtWidgets import (QApplication, QFrame, QLabel, QLineEdit, QListWidget,
                              QListWidgetItem, QTableWidget, QVBoxLayout,
                              QWidget)
 
@@ -160,6 +160,11 @@ class _ZoneStyleMixin:
     PaletteChange. Without both guards that is an unbounded recursion: the flag
     stops the immediate re-entry, and comparing the sheet stops the round trip a
     parent's own setStyleSheet sets off.
+
+    Colours come from the application palette, not the widget's own: once a
+    widget carries a style sheet, Qt stops passing it a new application
+    palette, so a zone built in the light theme stayed white in the dark one.
+    The theme bus is what tells it to repaint.
     """
 
     _state = "none"
@@ -178,12 +183,21 @@ class _ZoneStyleMixin:
     def _on_drag_state(self, state: str) -> None:
         """Hook for whatever else the state changes, e.g. a caption."""
 
+    def _follow_theme(self) -> None:
+        from vpcr.gui import theme
+        theme.bus().changed.connect(self._on_theme)
+        self._apply_palette()
+
+    def _on_theme(self, _scheme: str) -> None:
+        if not sip.isdeleted(self):
+            self._apply_palette()
+
     def _apply_palette(self) -> None:
         if self._applying:
             return
         self._applying = True
         try:
-            css = self._css(zone_colors(self.palette(), self._state))
+            css = self._css(zone_colors(QApplication.palette(), self._state))
             if css != self.styleSheet():
                 self.setStyleSheet(css)
         finally:
@@ -338,7 +352,7 @@ class DropListWidget(_ZoneStyleMixin, _DropMixin, QListWidget):
         self.model().rowsInserted.connect(lambda *_: self._place_caption())
         self.model().rowsRemoved.connect(lambda *_: self._place_caption())
         self.model().modelReset.connect(lambda *_: self._place_caption())
-        self._apply_palette()
+        self._follow_theme()
 
     def _css(self, c: ZoneColors) -> str:
         self._caption.restyle(c)
@@ -455,7 +469,7 @@ class DropZone(_ZoneStyleMixin, _DropMixin, QFrame):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(self._caption)
-        self._apply_palette()
+        self._follow_theme()
 
     # -- appearance --------------------------------------------------------
 
