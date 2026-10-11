@@ -207,6 +207,9 @@ def stylesheet(t: dict[str, str]) -> str:
     QFrame#tile[active="true"] {{ border: 2px solid {t['accent']}; }}
     QFrame#tile[drag="accept"] {{ border: 2px dashed {t['accent']}; background: {t['accent_soft']}; }}
     QFrame#tile[drag="reject"] {{ border: 2px dashed {t['bad']}; }}
+    QFrame#kpi {{ background: {t['card']}; border: 1px solid {t['line']}; border-radius: 8px; }}
+    QLabel#kpiValue {{ font-size: 20px; font-weight: 700; color: {t['ink']}; }}
+    QLabel#kpiValue[warn="true"] {{ color: {t['warn']}; }}
     QLabel#tileTitle {{ color: {t['muted']}; font-size: 10px; font-weight: 600;
                   letter-spacing: 1px; }}
     QLabel#tileMain {{ font-size: 13px; font-weight: 600; }}

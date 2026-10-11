@@ -41,6 +41,7 @@ from vpcr.gui.dnd import (FASTA_DIR_SUFFIXES, FASTA_SUFFIXES, JAR_SUFFIXES,
 from vpcr.gui.primer_dialog import PrimerDialog, PrimerState
 from vpcr.gui.primer_io import load_pairs_interactive
 from vpcr.gui.setup_strip import ChipBar, SetupTile
+from vpcr.gui.summary_view import SummaryPage
 from vpcr.gui.widgets import (NoWheelComboBox, NoWheelDoubleSpinBox,
                              NoWheelSpinBox)
 from vpcr.core.export import (EXCEL_ROW_LIMIT, detail_table, export_run,
@@ -914,7 +915,11 @@ class MainWindow(QMainWindow):
             view.horizontalHeader().setSectionResizeMode(
                 QHeaderView.ResizeMode.ResizeToContents)
             views.append(view)
-        self.tabs.addTab(views[0], "Summary")
+        self.summary_view = views[0]
+        # Headline numbers and the virtual gel around the summary table.
+        self.summary_page = SummaryPage(self.summary_view)
+        self.summary_page.laneClicked.connect(self._select_summary_row)
+        self.tabs.addTab(self.summary_page, "Summary")
 
         # The filters belong to the Detail table, so they sit on its page.
         detail_page = QWidget()
@@ -958,6 +963,19 @@ class MainWindow(QMainWindow):
         cl.addWidget(self.export_btn)
         self.tabs.setCornerWidget(corner, Qt.Corner.TopRightCorner)
         return w
+
+    def _select_summary_row(self, pair: str, engine: str) -> None:
+        """A click on a gel lane selects that pair's row in the table."""
+        df = self.summary_model._df
+        if df.empty or "pair" not in df:
+            return
+        hit = df["pair"] == pair
+        if "engine" in df:
+            hit &= df["engine"] == engine
+        rows = list(df.index[hit])
+        if rows:
+            self.summary_view.selectRow(rows[0])
+            self.summary_view.scrollTo(self.summary_model.index(rows[0], 0))
 
     def _apply_detail_filter(self) -> None:
         if self._detail_df is None:
@@ -1173,6 +1191,7 @@ class MainWindow(QMainWindow):
         self.export_btn.setEnabled(False)
         self.alignment_tab.set_results([])
         self.primer_map_tab.set_results([])
+        self.summary_page.set_results(None, [])
         self.tabs.setCurrentIndex(self.tabs.indexOf(self.log))
 
         # The log is archived next to the results, so it records the run.
@@ -1271,6 +1290,7 @@ class MainWindow(QMainWindow):
                 summary = summary_table(results)
                 detail = detail_table(results, include_sequence=self._run_include_sequence)
                 self.summary_model.set_dataframe(summary)
+                self.summary_page.set_results(summary, results)
                 # Sequences are long; hide them on screen but keep them for export.
                 self._detail_df = detail.drop(columns=["amplicon_seq"], errors="ignore")
             self.alignment_tab.set_results(results)

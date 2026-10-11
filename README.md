@@ -66,6 +66,7 @@ vpcr_app/
       column_dialog.py  manual column mapping for primer tables
       dnd.py            drag-and-drop file widgets, including the drop zone
       setup_strip.py    the setup tiles and the filter chips
+      summary_view.py   the Summary tab: headline cards and the virtual gel
       theme.py          light and dark themes, from one set of colour tokens
       widgets.py        spin boxes and combos that ignore the mouse wheel
 ```
@@ -102,6 +103,18 @@ when comparing engines), Cancel and the progress bar, always in view.
 
 The Detail filters are chips on the Detail tab; *Export* sits on the tab bar,
 since it writes every table.
+
+**Summary at a glance.** Above the summary table, four cards: how many
+sequences were searched (once per file, however many pairs), the best pair and
+its share (*likely* products when scored), the pair with the most multiband
+sequences, and either the agreement between engines or the annealing
+temperatures used. Beside the table, a **virtual gel**: a ladder on a log scale
+and one lane per pair — two, *J* and *B*, when both engines ran. Each product
+size is a band as bright as the share of sequences that give it, so a size
+nearly every species gives is a bright band, one a few give is faint, and
+sizes that vary between species spread into a short smear. Hover a lane for
+its numbers; click it to select its row. The gel stays dark in both themes, as
+on a transilluminator.
 
 **Light and dark.** The button at the right of the menu bar switches theme;
 *View → Theme* also offers *Follow Windows*, the default, which tracks the
