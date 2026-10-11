@@ -28,8 +28,21 @@ from pathlib import Path
 from .model import PrimerPair, RunConfig
 from .scoring import revcomp
 
-# Builds the app was written and checked against: SHA-256 -> description.
+# Builds the app was checked against: SHA-256 -> description. Each passes the
+# self-test, and on 216 templates of known outcome they give the same products
+# in linear mode, the only one the app uses (README, "Choosing the JAR build").
+# Dates are those of the upstream commits (github.com/rkalendar/virtualPCR).
 KNOWN_BUILDS: dict[str, str] = {
+    "96e9b06bcf7cc6b4aa0bb3d3fc2db983a22ec0d81edbc89035b4c6801b1c7a56":
+        "virtualPCR, build of 2026-08-27 (Java 26)",
+    "01410d93be316bae8fa7ab2e16f4b25b064c30f5c4102f3c3a704206e98ec50c":
+        "virtualPCR, build of 2026-08-25 (Java 26)",
+    "a9b58d9ce06ba5c5afad5f7566461cc91b763f4686ef41cf681ac34e9bf97656":
+        "virtualPCR, build of 2026-08-24 (Java 26)",
+    "3a763ace557b974775ee8eb2989428e06e02ae1300f740720953ffc9dcffde84":
+        "virtualPCR, build of 2026-08-24 (Java 25)",
+    "12f44b4629c2a544c00c9ec6f2469a791cfbac597c5addbc6f920e5f6098ac25":
+        "virtualPCR, build of 2026-08-02 (Java 26)",
     "44a010c019827974270c77e4e7bf92ddba0784e4db7dd42b143ce315c06e0d73":
         "virtualPCR, build of 2026-07-08 (Java 25)",
 }

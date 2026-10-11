@@ -12,13 +12,22 @@ Bundled third-party component
 jar/virtualPCR.jar is the in silico PCR engine, from the virtualPCR project
 by Ruslan Kalendar: https://github.com/rkalendar/virtualPCR
 It is distributed here unmodified, under the GNU General Public License
-version 3.
+version 3. It is the build published on 2026-08-27, upstream commit
+7208b64a376938d5e2b27edddebd2583fdd9fe80, file dist/virtualPCR.jar:
+
+    SHA-256 96e9b06bcf7cc6b4aa0bb3d3fc2db983a22ec0d81edbc89035b4c6801b1c7a56
+    https://github.com/rkalendar/virtualPCR/tree/7208b64a376938d5e2b27edddebd2583fdd9fe80
 
     Kalendar R., Shustov A.V., Akhmetollayev I., Kairov U. (2024)
     Designing allele-specific competitive-extension PCR-based assays for
     high-throughput genotyping and gene characterization.
     Frontiers in Molecular Biosciences.
 
-Source for the engine is available from its authors; the GPLv3 entitles you
-to it. Nothing in this repository reimplements primer binding or the
-thermodynamic model.
+The source the author publishes for that build (src/ at the commit above) is
+attached to each release of this app as virtualPCR-src-2026-08-27.zip. It
+covers the program's front end; the search engine's classes (InSilicoPCR,
+Melting, oligoparam, primer, LongIntHashMap) are not in it. Their source is
+available from the author, and the GPLv3 entitles you to it.
+
+The app's built-in engine (vpcr/core/thermo_engine.py) is an independent
+search written for this project; it shares no code with the JAR.

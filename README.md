@@ -267,10 +267,10 @@ keyboard or the arrows to set them.
 ## Requirements
 
 * Python 3.10+, `PyQt6`, `pandas`, `openpyxl`, `primer3-py` (`Run vPCR.bat` installs these)
-* A JRE. **Check which one:** `dist/virtualPCR.jar` in the upstream repo is
-  compiled for Java 25 and will not start on Java 24. The older
-  `vPCR/virtualPCR.jar` targets Java 23. *Help → Java / JAR info* reports both
-  the JRE version and what the JAR needs.
+* A JRE. **Check which one:** the JAR in `jar/` (upstream build of
+  2026-08-27) is compiled for Java 26 and will not start on Java 25; the
+  2026-07-08 build needed Java 25. *Help → Java / JAR info* reports both the
+  JRE version and what the JAR needs.
 
 ## Installing on another computer
 
@@ -278,7 +278,7 @@ Copy the whole `vpcr_app` folder. Nothing else from this repository is needed.
 On that machine, install Python 3.10+ and a JRE, then double-click
 `Run vPCR.bat`.
 
-`java -version` should print 25 or higher for the JAR in `jar/`. The app
+`java -version` should print 26 or higher for the JAR in `jar/`. The app
 searches for JREs on `PATH`, in the `PATH` and `JAVA_HOME` Windows records now
 (so a JDK installed while the app is open counts), in the JDKs the installers
 register under `JavaSoft`, and under the usual install folders (`Java`,
@@ -291,7 +291,7 @@ version.
 
 Without a suitable Java, a JAR engine (*virtualPCR JAR* or *Both*) is flagged
 as soon as the app opens: the *Parameters* tile turns red with the reason
-("JAR needs Java 25+, none installed"), and the form says it again under
+("JAR needs Java 26+, none installed"), and the form says it again under
 *Annealing Ta* with a link to download that Java. Choosing a JAR engine looks
 for Java afresh — it may have been installed with the app open — and, if it
 still cannot run, raises a toast with **Download Java** and **Use built-in
@@ -300,7 +300,7 @@ engine**; *Run* does the same. The built-in engine needs no Java.
 No restart is needed after installing Java. While the JAR is waiting for one,
 the app looks again in the background each time it comes back to the front —
 from the installer, say — and when Java is there the tile turns green and a
-toast says "Java 25 found — the JAR engine is ready".
+toast says "Java 26 found — the JAR engine is ready".
 
 The JAR always lives in `jar/virtualPCR.jar`, and the app takes it from there
 at start, whether or not a Java to run it is installed — a missing or too old
@@ -478,6 +478,38 @@ within a study.** Ask the author for the engine source — GPLv3 entitles you to
 Prefer the new build: it fixes the two bugs below and does not crash on
 circular templates. `Help → Java / JAR info` shows what is installed.
 
+## Choosing the JAR build
+
+The app ships the upstream build of **2026-08-27** (Java 26). It replaced the
+2026-07-08 build (Java 25) after both were run, with the last build of the old
+generation (2025-08-14, `InSilicoPCR2/3`, Java 24) and the built-in engine, on
+216 linear templates whose products are known by construction: two pairs (one
+exact, one degenerate), mismatches at 18 sets of positions counted from the
+3' end, in the forward or the reverse site, three backgrounds each, plus two
+products in one record, sites at the very ends and the minus strand.
+
+| `number3errors` | old 2025-08-14 | 2026-07-08 | 2026-08-27 | built-in |
+|---|---|---|---|---|
+| 0 | 123 / 216 | 123 / 216 | 123 / 216 | 163 / 216 |
+| 1 | 123 / 216 | 123 / 216 | 123 / 216 | 163 / 216 |
+| 2 | 171 / 216 | 171 / 216 | 171 / 216 | 163 / 216 |
+
+The three builds accept and reject the same sites, template by template, with
+the same coordinates and sizes, all correct. In linear mode — the only one the
+app uses — moving to 2026-08-27 changes no result. It does fix most of the
+circular mode (below), and it is the build its author maintains. The cost is
+Java 26.
+
+Two things these templates do not settle. The 82 % vs 51 % gap in the table
+above came from real mitogenomes and an old build for Java 23 that is no longer
+in the upstream history; the old-generation build that is there behaves like
+the new ones here, so the gap likely depends on mismatch patterns the synthetic
+set does not cover. And every build accepts a single mismatch at the 3'
+terminal base even with `number3errors=0`; the biological score is what marks
+such a product down. The built-in engine follows duplex thermodynamics instead,
+so it accepts some 5' mismatches the JAR refuses and refuses some the JAR
+accepts — which is its purpose as a second opinion.
+
 ## Verifying the JAR build
 
 The JAR states no version — its manifest names only the Java that compiled it —
@@ -485,8 +517,9 @@ and a different build can change the report format or the search without any
 error, leaving the tables wrong in silence. So the app identifies a build by its
 **SHA-256** and judges it by what it does (`core/jar_check.py`):
 
-* **Known builds.** The build the app was written and checked against (2026-07-08,
-  Java 25, `44a010c0…`) is listed by name; any other is *unrecognised*.
+* **Known builds.** The builds checked as above are listed by name, from the
+  bundled 2026-08-27 (Java 26, `96e9b06b…`) back to 2026-07-08 (Java 25,
+  `44a010c0…`); any other is *unrecognised*.
 * **Self-test.** Before a build is first used on a machine, it is run on
   templates whose products are known by construction — products on either
   strand, two in one record, sites at the very ends of a sequence, a record with
@@ -614,9 +647,9 @@ build emits the full sequence. When a FASTA repeats a header, the base is taken
 from the record whose sequence matches the amplicon, not from the first one.
 
 **New build: the circular mode is not used.** Run against templates whose
-products are known by construction (Java 25, build of 2026-07-08), the JAR's
-linear mode was exact — coordinates, sizes and sequences, on both strands and
-with sites at the very ends — but `molecular=circle`:
+products are known by construction, the JAR's linear mode is exact in every
+build since 2026-07-08 — coordinates, sizes and sequences, on both strands and
+with sites at the very ends — but `molecular=circle` in the 2026-07-08 build:
 
 * reports every product a second time, at its size plus the template length
   minus one (a full turn of the circle, which no polymerase makes);
@@ -627,7 +660,18 @@ with sites at the very ends — but `molecular=circle`:
 * scores a site cut by the origin at a fraction of its identity (47 % for a
   perfect match).
 
-So the runner never sets it. Each circular record is written with its first
+The 2026-08-27 build fixes three of the four — no ghost products, products
+across the origin with their coordinates and full size, a cut site at 100 % —
+but still misses a reverse site starting at base 1:
+
+| Case, `molecular=circle` | 2026-07-08 | 2026-08-27 |
+|---|---|---|
+| product across the origin | no coordinates, 1 bp short | correct |
+| site cut by the origin | 47 % identity | 100 % |
+| ghost product on a short circle | present | gone |
+| reverse site at base 1 | missed | **still missed** |
+
+So the runner never sets it, with any build. Each circular record is written with its first
 bases appended — as many as the longest product needs — and searched as a
 line; afterwards, sites and products found in the appended copy are dropped as
 duplicates, ends past the origin are folded back (end < start, as in
