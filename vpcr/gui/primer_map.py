@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (QComboBox, QGraphicsScene, QGraphicsSimpleTextItem,
                              QVBoxLayout, QWidget)
 
 from vpcr.core.model import PairResult, PrimerHit
+from vpcr.gui import theme
 
 # A run can hold far more target sequences than a combo should carry; the most
 # informative (most distinct primers) are kept and the rest noted.
@@ -143,9 +144,17 @@ class PrimerMapTab(QWidget):
         self.view = _TrackView(self.scene)
         self.view.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
-        self.view.setBackgroundBrush(QBrush(QColor("#fbfbfb")))
+        self.view.setBackgroundBrush(QBrush(theme.color("card")))
         lay.addWidget(self.view, 1)
         self._placeholder("Run in silico PCR, then choose a target to map its primers.")
+        theme.bus().changed.connect(self._on_theme)
+
+    def _on_theme(self, *_) -> None:
+        self.view.setBackgroundBrush(QBrush(theme.color("card")))
+        if self._groups:
+            self._render_current()
+        else:
+            self._placeholder(self._placeholder_msg)
 
     # -- population --------------------------------------------------------
 
@@ -232,16 +241,16 @@ class PrimerMapTab(QWidget):
         self._update_info(g)
 
     def _draw_axis(self, lo: int, hi: int, x) -> None:
-        pen = QPen(QColor("#666"))
+        pen = QPen(theme.color("muted"))
         self.scene.addLine(x(lo), 0, x(hi), 0, pen)
         step = _nice_step(hi - lo)
         tick = (lo // step) * step
         if tick < lo:
             tick += step
-        tick_pen = QPen(QColor("#999"))
+        tick_pen = QPen(theme.color("line"))
         while tick <= hi:
             self.scene.addLine(x(tick), -3, x(tick), 3, tick_pen)
-            self._text(f"{tick:,}", x(tick), 6, "#666", 8, anchor_center=True)
+            self._text(f"{tick:,}", x(tick), 6, theme.tok("muted"), 8, anchor_center=True)
             tick += step
 
     def _draw_lanes(self, hits: list[PrimerHit], x, up: bool) -> None:
@@ -252,7 +261,7 @@ class PrimerMapTab(QWidget):
 
     def _draw_primer(self, h: PrimerHit, x0: float, x1: float, y: float,
                      forward: bool) -> None:
-        color = self._colors.get(h.primer_name, QColor("#888"))
+        color = self._colors.get(h.primer_name, theme.color("muted"))
         head = min(_ARROW, max(1.0, (x1 - x0) * 0.5))
         yb = y + _LANE_H
         ymid = y + _LANE_H / 2
@@ -267,8 +276,9 @@ class PrimerMapTab(QWidget):
             f"{h.primer_name}  ({'forward' if forward else 'reverse'})\n"
             f"pos {h.start:,}–{h.end:,}  ·  {h.identity:g}% id  ·  Tm {h.tm:g}°C\n"
             f"{h.mismatches} mismatch(es)")
+        ink = color.darker(150) if theme.scheme() == "light" else color.lighter(130)
         label = self._text(h.primer_name, x0 + 1, y - 11 if forward else yb + 1,
-                           color.darker(150).name(), 8)
+                           ink.name(), 8)
         label.setToolTip(item.toolTip())
 
     def _text(self, s: str, sx: float, sy: float, color: str, pt: int,
@@ -292,15 +302,16 @@ class PrimerMapTab(QWidget):
             if overl:
                 where = "; ".join(f"{s.start:,}–{s.end:,}: " + ", ".join(sorted(s.names))
                                   for s in overl)
-                return base + f" — <span style='color:#c0392b'>overlap</span> at {where}"
+                return base + f" — <span style='color:{theme.tok("bad")}'>overlap</span> at {where}"
             return base + " — no overlap"
 
         self.info.setText(phrase(g.forward, "Forward") + "<br>"
                           + phrase(g.reverse, "Reverse"))
 
     def _placeholder(self, msg: str) -> None:
+        self._placeholder_msg = msg
         self.scene.clear()
         self.info.setText("")
         t = self.scene.addSimpleText(msg, QFont("Segoe UI", 10))
-        t.setBrush(QBrush(QColor("#888")))
+        t.setBrush(QBrush(theme.color("muted")))
         self.scene.setSceneRect(QRectF(-10, -10, 400, 40))

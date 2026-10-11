@@ -1,11 +1,13 @@
 """PyQt6 front end for in silico PCR.
 
-Layout: targets + primer summary + parameters on the left, run log and result
-tables on the right. The JAR runs in a worker thread; the batch itself is
-parallel, so the GUI thread only marshals progress.
+Layout: a strip of setup tiles across the top (targets, primers, parameters,
+output, and Run), a drawer under it that opens the clicked tile's form, and
+the results across the full width below. The JAR runs in a worker thread; the
+batch itself is parallel, so the GUI thread only marshals progress.
 
-Choosing primers happens in its own window (gui/primer_dialog.py), so the left
-panel holds a summary and a drop zone rather than three cramped tables.
+Choosing primers happens in its own window (gui/primer_dialog.py), so the
+Primers drawer holds a summary and a drop zone rather than three tables.
+Colours come from gui/theme.py, light or dark.
 """
 from __future__ import annotations
 
@@ -18,27 +20,29 @@ from typing import Callable, NamedTuple
 
 import pandas as pd
 from PyQt6 import sip
-from PyQt6.QtCore import (QAbstractTableModel, QModelIndex, QSettings, Qt,
+from PyQt6.QtCore import (QAbstractTableModel, QModelIndex, QSettings, QSize, Qt,
                           QThread, QTimer, pyqtSignal)
-from PyQt6.QtGui import QAction, QColor
+from PyQt6.QtGui import QAction, QActionGroup
 from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                              QComboBox, QDialog, QFileDialog, QFormLayout,
-                             QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-                             QListWidget, QMainWindow, QMessageBox,
+                             QFrame, QHBoxLayout, QHeaderView, QLabel,
+                             QLineEdit, QMainWindow, QMessageBox,
                              QPlainTextEdit, QProgressBar, QPushButton,
-                             QScrollArea, QSplitter, QTabWidget,
-                             QTableView, QVBoxLayout, QWidget)
+                             QSizePolicy, QStackedWidget, QTabWidget,
+                             QTableView, QToolButton, QVBoxLayout, QWidget)
 
 from vpcr import APP_NAME, APP_ROOT, JAR_DIR
+from vpcr.gui import theme
 from vpcr.gui.alignment_view import AlignmentTab
-from vpcr.gui.collapsible import CollapsibleBox
 from vpcr.gui.primer_map import PrimerMapTab
-from vpcr.gui.dnd import (FASTA_SUFFIXES, JAR_SUFFIXES, DropDirLineEdit,
-                          DropLineEdit, DropListWidget, DropZone)
+from vpcr.gui.dnd import (FASTA_DIR_SUFFIXES, FASTA_SUFFIXES, JAR_SUFFIXES,
+                          PRIMER_SUFFIXES, DropDirLineEdit, DropLineEdit,
+                          DropListWidget, DropZone)
 from vpcr.gui.primer_dialog import PrimerDialog, PrimerState
 from vpcr.gui.primer_io import load_pairs_interactive
+from vpcr.gui.setup_strip import ChipBar, SetupTile
 from vpcr.gui.widgets import (NoWheelComboBox, NoWheelDoubleSpinBox,
-                             NoWheelSpinBox, apply_button_style)
+                             NoWheelSpinBox)
 from vpcr.core.export import (EXCEL_ROW_LIMIT, detail_table, export_run,
                               run_folder_name, summary_table, unique_dir,
                               write_tables)
@@ -49,9 +53,8 @@ from vpcr.core.runner import (JarError, discover_javas, jar_class_version,
 from vpcr.core.scoring import (DEFAULT_POLYMERASE, POLYMERASES, Reaction,
                                resolve_ta)
 
-# Four rows of 30 px. The list used to take whatever height the panel had left
-# over — 192 px to show two files — because it carried the only stretch factor.
-TARGET_LIST_HEIGHT = 115
+# The target list in its drawer: five rows, then it scrolls.
+TARGET_LIST_HEIGHT = 140
 
 # The Annealing Ta spin box shows "auto" at its minimum: each pair then uses its
 # own Ta from the primer file, else its lower Tm plus the polymerase's offset.
@@ -127,30 +130,35 @@ DETAIL_VIEW_CAP = 50_000
 class DetailFilter(NamedTuple):
     label: str
     apply: Callable[[pd.DataFrame], pd.DataFrame]
+    chip: str = ""   # the short text on the filter chip; label is its tooltip
 
 
 # 'Multi-amplicon' = more than one predicted product. 'Multiband' = products of
 # more than one distinct size, i.e. what a gel would actually resolve.
 DETAIL_FILTERS: tuple[DetailFilter, ...] = (
-    DetailFilter("All", lambda d: d),
-    DetailFilter("Amplified", lambda d: d[_col(d, "amplified") == True]),  # noqa: E712
-    DetailFilter("Not amplified", lambda d: d[_col(d, "amplified") != True]),  # noqa: E712
-    DetailFilter("Multi-amplicon (>1 product)", lambda d: d[_col(d, "n_amplicons") > 1]),
-    DetailFilter("Multiband (>1 size)", lambda d: d[_col(d, "n_unique_sizes") > 1]),
+    DetailFilter("All rows", lambda d: d, "All"),
+    DetailFilter("Amplified", lambda d: d[_col(d, "amplified") == True],  # noqa: E712
+                 "Amplified"),
+    DetailFilter("Not amplified", lambda d: d[_col(d, "amplified") != True],  # noqa: E712
+                 "Not amplified"),
+    DetailFilter("Multi-amplicon (>1 product)", lambda d: d[_col(d, "n_amplicons") > 1],
+                 "Multi-product"),
+    DetailFilter("Multiband (>1 size)", lambda d: d[_col(d, "n_unique_sizes") > 1],
+                 "Multiband"),
     # From the biological score (absent when a run was not scored).
     DetailFilter("Likely (strong or probable)",
-                 lambda d: d[_col(d, "call").isin(["strong", "probable"])]),
+                 lambda d: d[_col(d, "call").isin(["strong", "probable"])], "Likely"),
     DetailFilter("Doubtful (weak or unlikely)",
-                 lambda d: d[_col(d, "call").isin(["weak", "unlikely"])]),
+                 lambda d: d[_col(d, "call").isin(["weak", "unlikely"])], "Doubtful"),
     # Compared with == False, not via _col: a missing value must not count.
     DetailFilter("Engines disagree",
                  lambda d: d[d["engines_agree"] == False] if "engines_agree" in d  # noqa: E712
-                 else d.iloc[0:0]),
+                 else d.iloc[0:0], "Engines disagree"),
 )
 
-# Background per call: green to red, light enough for black text.
-CALL_COLORS = {"strong": QColor(204, 238, 214), "probable": QColor(232, 244, 214),
-               "weak": QColor(252, 238, 204), "unlikely": QColor(250, 222, 222)}
+# Cell backgrounds, by theme token: green for good news, amber, red.
+_CALL_TOKENS = {"strong": "good_bg", "probable": "good_bg2",
+                "weak": "warn_bg", "unlikely": "bad_bg"}
 
 
 # ---------------------------------------------------------------------------
@@ -186,12 +194,24 @@ class DataFrameModel(QAbstractTableModel):
                 return f"{value:g}"
             return str(value)
         if role == Qt.ItemDataRole.BackgroundRole:
-            col = self._df.columns[index.column()]
-            if col == "amplified":
-                return QColor(219, 245, 224) if bool(value) else QColor(250, 226, 226)
-            if col == "call":
-                return CALL_COLORS.get(value)
+            key = self._cell_token(index.column(), value)
+            return theme.color(key) if key else None
         return None
+
+    def _cell_token(self, column: int, value) -> str | None:
+        col = self._df.columns[column]
+        if col == "amplified":
+            return "good_bg" if bool(value) else "bad_bg"
+        if col == "call":
+            return _CALL_TOKENS.get(value)
+        return None
+
+    def repaint_colors(self) -> None:
+        """Re-query the backgrounds after a theme change."""
+        if len(self._df):
+            self.dataChanged.emit(self.index(0, 0),
+                                  self.index(len(self._df) - 1, len(self._df.columns) - 1),
+                                  [Qt.ItemDataRole.BackgroundRole])
 
     def headerData(self, section: int, orientation: Qt.Orientation,
                    role: int = Qt.ItemDataRole.DisplayRole):
@@ -257,20 +277,22 @@ class MainWindow(QMainWindow):
         self._settings = QSettings("IAvH", APP_NAME)
         # Set before any widget exists: resizeEvent fires during construction.
         self._restoring = True
-        self._pending_splitter = None
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
         self._save_timer.setInterval(400)
         self._save_timer.timeout.connect(self._save_ui_state)
+        if (app := QApplication.instance()) is not None:
+            theme.apply(app, str(self._settings.value("ui/theme", "system")))
+        theme.bus().changed.connect(self._on_theme_changed)
 
-        self.splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.splitter.addWidget(self._build_left())
-        self.splitter.addWidget(self._build_right())
-        self.splitter.setStretchFactor(0, 0)
-        self.splitter.setStretchFactor(1, 1)
-        self.splitter.setSizes([470, 810])
-        self.splitter.splitterMoved.connect(lambda *_: self._schedule_save())
-        self.setCentralWidget(self.splitter)
+        central = QWidget()
+        lay = QVBoxLayout(central)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        lay.addWidget(self._build_setup())
+        lay.addWidget(self._build_results(), 1)
+        self.setCentralWidget(central)
+        self.setMinimumSize(900, 560)
 
         self._build_menu()
         self._autodetect_jar()
@@ -309,14 +331,30 @@ class MainWindow(QMainWindow):
             else:
                 w.setValue(value)
 
-    def _on_section_toggled(self, _expanded: bool) -> None:
-        self._refresh_tail_stretch()
-        self._save_ui_state()
+    # -- the drawer ----------------------------------------------------------
 
-    def _refresh_tail_stretch(self) -> None:
-        """Give the trailing spacer the spare height only when nothing else wants it."""
-        growing = any(b.is_expanded() and b.stretch for b in self.sections.values())
-        self._left_layout.setStretch(self._tail_index, 0 if growing else 1)
+    def toggle_section(self, key: str) -> None:
+        """Open `key`'s form in the drawer, or close the drawer if it is open."""
+        self.open_section(None if self._open_section == key else key)
+
+    def open_section(self, key: str | None) -> None:
+        self._open_section = key
+        for k, tile in self.sections.items():
+            tile.set_active(k == key)
+        if key is None:
+            self.drawer.setVisible(False)
+            return
+        page = self._drawer_pages[key]
+        # Only the shown page may claim height, or the drawer is as tall as
+        # the tallest form whichever one is open.
+        for i in range(self._drawer_stack.count()):
+            w = self._drawer_stack.widget(i)
+            w.setSizePolicy(QSizePolicy.Policy.Preferred,
+                            QSizePolicy.Policy.Preferred if w is page
+                            else QSizePolicy.Policy.Ignored)
+        self._drawer_stack.setCurrentWidget(page)
+        self.drawer.setVisible(True)
+        self._drawer_stack.adjustSize()
 
     # -- section summaries -------------------------------------------------
 
@@ -349,12 +387,9 @@ class MainWindow(QMainWindow):
 
     def changeEvent(self, event) -> None:  # noqa: N802
         from PyQt6.QtCore import QEvent
-        # Qt can deliver this before _build_left has run.
+        # Qt can deliver this before the setup strip has been built.
         if event.type() == QEvent.Type.PaletteChange and hasattr(self, "primer_names"):
             self._dim_primer_names()
-            # Rebuild the accent hover/press style for the new theme.
-            if (app := QApplication.instance()) is not None:
-                apply_button_style(app)
         super().changeEvent(event)
 
     def _refresh_primer_labels(self) -> None:
@@ -389,51 +424,70 @@ class MainWindow(QMainWindow):
         # DropListWidget._place_caption does for the same signal.
         if sip.isdeleted(self):
             return
-        jar = self.jar_edit.text().strip()
-        self.sections["jar"].set_summary(Path(jar).name if jar else "not set")
-
-        n = self.target_list.count()
+        paths = self.target_list.paths()
+        n = len(paths)
+        names = [Path(x).name for x in paths]
         self.sections["targets"].set_summary(
-            "none" if not n else f"{n} file{'s' if n > 1 else ''}")
+            f"{n} FASTA file{'s' if n != 1 else ''}" if n else "No FASTA files",
+            (", ".join(names[:2]) + (f" +{n - 2}" if n > 2 else "")) if n
+            else "drop files or a folder here",
+            "\n".join(paths) if n else "Drop FASTA files or a folder here, or click to add")
+        self.sections["targets"].set_ready(n > 0)
 
-        self.sections["primers"].set_summary(self.primers.summary())
+        st = self.primers
+        if st.is_empty:
+            self.sections["primers"].set_summary(
+                "No primers", "drop FASTA, TSV, CSV or XLSX",
+                "Drop a primer file here, or click to load one")
+        else:
+            chosen = st.selected
+            self.sections["primers"].set_summary(
+                f"{len(chosen)} of {len(st.pairs)} pair{'s' if len(st.pairs) != 1 else ''}",
+                f"{len(st.forwards)} F · {len(st.reverses)} R",
+                "\n".join(p.name for p in chosen) or "no pairs ticked")
+        self.sections["primers"].set_ready(bool(st.selected))
         self._refresh_primer_labels()
 
-        bits = [f"{self.min_len.value()}–{self.max_len.value()} bp",
-                f"{self.err3.value()} mm",
-                "circular" if self.circular.isChecked() else "linear"]
+        engine = self.engine.currentData() or "jar"
+        sub = ["circular" if self.circular.isChecked() else "linear"]
         if self.probe.isChecked():
-            bits.append("probe")
-        if self.engine.currentData() != "jar":
-            bits.append({"thermo": "built-in", "both": "JAR + built-in"}[
-                self.engine.currentData()])
-        bits.append(self.polymerase.currentText().split(" (")[0])
-        if self.fixed_ta.value() != TA_AUTO:
-            bits.append(f"Ta {self.fixed_ta.value():g} °C")
+            sub.append("probe")
+        if engine != "jar":
+            sub.append({"thermo": "built-in", "both": "JAR + built-in"}[engine])
+        sub.append(self.polymerase.currentText().split(" (")[0])
+        sub.append("auto Ta" if self.fixed_ta.value() == TA_AUTO
+                   else f"Ta {self.fixed_ta.value():g} °C")
         at_default = self.parameters_are_default()
         if not at_default:
-            bits.append("modified")
-        self.sections["parameters"].set_summary(" • ".join(bits))
+            sub.append("modified")
+        main = f"{self.min_len.value()}–{self.max_len.value()} bp · {self.err3.value()} mm"
+        self.sections["parameters"].set_summary(main, " · ".join(sub),
+                                                f"{main}\n" + "\n".join(sub))
+        jar = self.jar_edit.text().strip()
+        self.sections["parameters"].set_ready(
+            engine == "thermo" or bool(jar and Path(jar).exists()))
         self.reset_btn.setEnabled(not at_default)
 
         label = self.run_label.text().strip()
-        out = [label or Path(self.out_edit.text().strip() or ".").name]
-        out.append("auto-export" if self.auto_export.isChecked() else "manual export")
-        self.sections["output"].set_summary(" • ".join(out))
+        folder = Path(self.out_edit.text().strip() or ".").name
+        self.sections["output"].set_summary(
+            label or folder, "auto-export" if self.auto_export.isChecked() else "manual export",
+            self.out_edit.text().strip())
+        self.sections["output"].set_ready(bool(self.out_edit.text().strip()))
+
+        jobs = len(self.primers.selected) * n * (2 if engine == "both" else 1)
+        self.jobs_label.setText(f"{jobs} job{'s' if jobs != 1 else ''}" if jobs
+                                else "add targets and primers")
 
     # -- persisted layout --------------------------------------------------
 
     def _save_ui_state(self) -> None:
-        # set_expanded() emits toggled, which lands here: without this guard a
-        # restore would overwrite later sections with their default state.
         if self._restoring:
             return
         s = self._settings
         # saveGeometry already carries the maximised/fullscreen flag.
         s.setValue("geometry", self.saveGeometry())
-        s.setValue("splitter", self.splitter.saveState())
-        for key, box in self.sections.items():
-            s.setValue(f"section/{key}", box.is_expanded())
+        s.setValue("ui/theme", theme.mode())
         # Closing the console that launched the app kills the process without a
         # closeEvent, so nothing may flush the settings later. Do it now.
         s.sync()
@@ -444,35 +498,36 @@ class MainWindow(QMainWindow):
             self._save_timer.start()
 
     def _restore_ui_state(self) -> None:
-        s = self._settings
         self._restoring = True
         try:
-            if (geom := s.value("geometry")) is not None:
+            if (geom := self._settings.value("geometry")) is not None:
                 self.restoreGeometry(geom)
             else:
-                self.resize(1280, 760)
-            # Applied on first show: a splitter restored before the window has
-            # its final width redistributes its panes when that width arrives.
-            self._pending_splitter = s.value("splitter")
-
-            for key, box in self.sections.items():
-                val = s.value(f"section/{key}")
-                if val is not None:
-                    # QSettings round-trips booleans as strings on some backends.
-                    box.set_expanded(val in (True, "true", "True", 1, "1"))
+                self.resize(1280, 800)
         finally:
             self._restoring = False
-        self._refresh_tail_stretch()
 
-    def showEvent(self, event) -> None:  # noqa: N802
-        super().showEvent(event)
-        if (state := self._pending_splitter) is not None:
-            self._pending_splitter = None
-            self._restoring = True
-            try:
-                self.splitter.restoreState(state)
-            finally:
-                self._restoring = False
+    # -- theme ---------------------------------------------------------------
+
+    def set_theme(self, mode: str) -> None:
+        if (app := QApplication.instance()) is not None:
+            theme.apply(app, mode)
+        self._save_ui_state()
+
+    def toggle_theme(self) -> None:
+        """The toolbar button flips between light and dark explicitly."""
+        self.set_theme("light" if theme.scheme() == "dark" else "dark")
+
+    def _on_theme_changed(self, scheme: str) -> None:
+        if not hasattr(self, "theme_btn") or sip.isdeleted(self):
+            return
+        dark = scheme == "dark"
+        self.theme_btn.setIcon(theme.toggle_icon(show_sun=dark))
+        self.theme_btn.setToolTip("Switch to light theme" if dark else "Switch to dark theme")
+        for m, act in self._theme_actions.items():
+            act.setChecked(m == theme.mode())
+        self.summary_model.repaint_colors()
+        self.detail_model.repaint_colors()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
@@ -525,77 +580,131 @@ class MainWindow(QMainWindow):
         quit_a.triggered.connect(self.close)
         m.addAction(quit_a)
 
+        v = self.menuBar().addMenu("&View")
+        tm = v.addMenu("Theme")
+        group = QActionGroup(self)
+        self._theme_actions: dict[str, QAction] = {}
+        for m, text in (("system", "Follow Windows"), ("light", "Light"), ("dark", "Dark")):
+            act = QAction(text, self, checkable=True)
+            act.setChecked(m == theme.mode())
+            act.triggered.connect(lambda _=False, m=m: self.set_theme(m))
+            group.addAction(act)
+            tm.addAction(act)
+            self._theme_actions[m] = act
+        v.addSeparator()
+        for key, text in (("targets", "Targets"), ("primers", "Primers"),
+                          ("parameters", "Parameters"), ("output", "Output")):
+            act = QAction(f"{text} settings", self)
+            act.triggered.connect(lambda _=False, k=key: self.open_section(k))
+            v.addAction(act)
+
         h = self.menuBar().addMenu("&Help")
         a = QAction("Java / JAR info", self)
         a.triggered.connect(self.show_env)
         h.addAction(a)
 
-    def _build_left(self) -> QWidget:
-        w = QWidget()
-        lay = QVBoxLayout(w)
-        self.sections: dict[str, CollapsibleBox] = {}
+        # The theme toggle sits at the right end of the menu bar.
+        self.theme_btn = QToolButton()
+        self.theme_btn.setObjectName("themeToggle")
+        self.theme_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.theme_btn.setIconSize(QSize(16, 16))
+        self.theme_btn.clicked.connect(self.toggle_theme)
+        corner = QWidget()
+        cl = QHBoxLayout(corner)
+        cl.setContentsMargins(0, 2, 8, 2)
+        cl.addWidget(self.theme_btn)
+        self.menuBar().setCornerWidget(corner, Qt.Corner.TopRightCorner)
+        self._on_theme_changed(theme.scheme())
 
-        def section(key: str, title: str, layout, stretch: int = 0,
-                    expanded: bool = True) -> None:
-            box = CollapsibleBox(title, expanded)
-            box.set_content_layout(layout)
-            box.toggled.connect(self._on_section_toggled)
-            self.sections[key] = box
-            lay.addWidget(box, stretch)
-            box.set_stretch(stretch)   # after addWidget: it adjusts the layout
+    def _build_setup(self) -> QWidget:
+        """The tile strip, and the drawer that opens a tile's form under it."""
+        host = QWidget()
+        v = QVBoxLayout(host)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
 
-        # JAR: autodetected, so it starts folded away.
-        jl = QHBoxLayout()
-        self.jar_edit = DropLineEdit(JAR_SUFFIXES)
-        self.jar_edit.setMinimumWidth(120)
-        self.jar_edit.setPlaceholderText("virtualPCR.jar")
-        self.jar_edit.setToolTip("Path to virtualPCR.jar — or drop the file here")
-        self.jar_edit.fileDropped.connect(lambda p: self._log(f"JAR: {p}"))
-        b = QPushButton("Browse")
-        b.clicked.connect(self.pick_jar)
-        jl.addWidget(self.jar_edit)
-        jl.addWidget(b)
-        section("jar", "virtualPCR JAR", jl, expanded=False)
+        host.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        strip = QFrame()
+        strip.setObjectName("strip")
+        strip.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        row = QHBoxLayout(strip)
+        row.setContentsMargins(14, 12, 14, 12)
+        row.setSpacing(10)
 
-        # targets
-        tl = QVBoxLayout()
+        self.drawer = QFrame()
+        self.drawer.setObjectName("drawer")
+        self.drawer.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        self._drawer_stack = QStackedWidget()
+        dl = QVBoxLayout(self.drawer)
+        dl.setContentsMargins(14, 12, 14, 14)
+        dl.addWidget(self._drawer_stack)
+        self.drawer.setVisible(False)
+        self._open_section: str | None = None
+        self._drawer_pages: dict[str, QWidget] = {}
+        self.sections: dict[str, SetupTile] = {}
+
+        def tile(key: str, title: str, page: QWidget, suffixes=(),
+                 dir_suffixes=None) -> SetupTile:
+            t = SetupTile(title, suffixes, dir_suffixes)
+            t.clicked.connect(lambda k=key: self.toggle_section(k))
+            self.sections[key] = t
+            self._drawer_pages[key] = page
+            self._drawer_stack.addWidget(page)
+            row.addWidget(t, 1)
+            return t
+
+        targets = tile("targets", "Targets", self._targets_page(),
+                       FASTA_SUFFIXES, FASTA_DIR_SUFFIXES)
+        targets.filesDropped.connect(self._on_targets_dropped)
+        primers = tile("primers", "Primers", self._primers_page(), PRIMER_SUFFIXES)
+        primers.filesDropped.connect(lambda ps: self.load_primers(str(ps[0])))
+        tile("parameters", "Parameters", self._parameters_page())
+        tile("output", "Output", self._output_page())
+        row.addWidget(self._run_box())
+
+        v.addWidget(strip)
+        v.addWidget(self.drawer)
+        return host
+
+    def _targets_page(self) -> QWidget:
+        page = QWidget()
+        lay = QHBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
         self.target_list = DropListWidget(FASTA_SUFFIXES)
         self.target_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.target_list.setToolTip("Drop FASTA files or a folder of them here")
-        # A cap, not a floor: QAbstractScrollArea hands out a 256x192 sizeHint,
-        # which a smaller minimumHeight does nothing about.
-        self.target_list.setMinimumHeight(70)
+        self.target_list.setMinimumHeight(90)
         self.target_list.setMaximumHeight(TARGET_LIST_HEIGHT)
         self.target_list.filesDropped.connect(
             lambda ps: self._log(f"Added {len(ps)} target file(s)"))
-        tl.addWidget(self.target_list)
-        row = QHBoxLayout()
-        for text, slot in (("Add", self.add_targets), ("Remove", self.remove_targets),
+        lay.addWidget(self.target_list, 1)
+        col = QVBoxLayout()
+        for text, slot in (("Add files...", self.add_targets), ("Remove", self.remove_targets),
                            ("Clear", lambda: self.target_list.clear())):
             btn = QPushButton(text)
             btn.clicked.connect(slot)
-            row.addWidget(btn)
-        tl.addLayout(row)
-        section("targets", "Target FASTA files", tl)
+            col.addWidget(btn)
+        col.addStretch(1)
+        lay.addLayout(col)
+        return page
 
-        # primers: a summary of what is loaded; the tables live in a dialog
-        pl = QVBoxLayout()
+    def _primers_page(self) -> QWidget:
+        page = QWidget()
+        lay = QHBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        left = QVBoxLayout()
         self.primer_count = QLabel()
         self.primer_count.setWordWrap(True)
         self.primer_names = QLabel()
         self.primer_names.setObjectName("primerNames")
+        self.primer_names.setWordWrap(True)
         self._dim_primer_names()
-        pl.addWidget(self.primer_count)
-        pl.addWidget(self.primer_names)
-
-        self.primer_drop = DropZone()
-        self.primer_drop.fileDropped.connect(self.load_primers)
-        self.primer_drop.clicked.connect(lambda: self.load_primers())
-        pl.addWidget(self.primer_drop)
-
+        left.addWidget(self.primer_count)
+        left.addWidget(self.primer_names)
+        left.addStretch(1)
         # Slots with optional arguments are wrapped: clicked(bool) would
         # otherwise arrive as the first parameter.
-        row = QHBoxLayout()
+        btns = QHBoxLayout()
         for text, tip, slot in (
                 ("Load file...", "Load primers from FASTA, TSV, CSV or XLSX",
                  lambda: self.load_primers()),
@@ -606,13 +715,36 @@ class MainWindow(QMainWindow):
             btn = QPushButton(text)
             btn.setToolTip(tip)
             btn.clicked.connect(slot)
-            row.addWidget(btn)
-        pl.addLayout(row)
-        section("primers", "Primers", pl)
+            btns.addWidget(btn)
+        btns.addStretch(1)
+        left.addLayout(btns)
+        lay.addLayout(left, 1)
 
-        # parameters. The spin boxes and the heap combo ignore the wheel: they
-        # sit in a scroll area, and scrolling past one used to edit it.
-        form = QFormLayout()
+        self.primer_drop = DropZone()
+        self.primer_drop.setMinimumWidth(300)
+        self.primer_drop.fileDropped.connect(self.load_primers)
+        self.primer_drop.clicked.connect(lambda: self.load_primers())
+        lay.addWidget(self.primer_drop, 1)
+        return page
+
+    @staticmethod
+    def _group(title: str, form: QFormLayout) -> QWidget:
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(0, 0, 0, 0)
+        head = QLabel(title)
+        head.setObjectName("groupTitle")
+        v.addWidget(head)
+        v.addLayout(form)
+        v.addStretch(1)
+        return w
+
+    def _parameters_page(self) -> QWidget:
+        """Three groups side by side: the amplicon, the biological score, the run.
+
+        The spin boxes and combos ignore the mouse wheel, so scrolling past one
+        never edits it.
+        """
         self.min_len = NoWheelSpinBox(); self.min_len.setRange(20, 50000)
         self.max_len = NoWheelSpinBox(); self.max_len.setRange(20, 50000)
         self.err3 = NoWheelSpinBox(); self.err3.setRange(0, 10)
@@ -622,14 +754,15 @@ class MainWindow(QMainWindow):
         self.probe = QCheckBox("Probe search")
         self.seqext = QCheckBox("Extract amplicon sequences")
         self.keep = QCheckBox("Keep raw .out reports")
-        form.addRow("Min amplicon (bp)", self.min_len)
-        form.addRow("Max amplicon (bp)", self.max_len)
-        form.addRow("3' mismatches", self.err3)
-        form.addRow("Parallel jobs", self.workers)
-        form.addRow("JVM heap", self.heap)
 
         # Biological score: what the bench protocol is, so each predicted
         # product can be graded rather than only counted.
+        self.engine = NoWheelComboBox()
+        for label, key, tip in ENGINE_CHOICES:
+            self.engine.addItem(label, key)
+            self.engine.setItemData(self.engine.count() - 1, tip,
+                                    Qt.ItemDataRole.ToolTipRole)
+        self.engine.setToolTip("What predicts the products. 'Both' compares them.")
         self.polymerase = NoWheelComboBox()
         for key, prof in POLYMERASES.items():
             self.polymerase.addItem(prof.label, key)
@@ -649,116 +782,157 @@ class MainWindow(QMainWindow):
             "View/Select primers table), else its lower primer Tm - 5 °C\n"
             "(+3 °C for high-fidelity polymerases).\n"
             "A value here applies to pairs that have no Ta of their own.")
-        self.engine = NoWheelComboBox()
-        for label, key, tip in ENGINE_CHOICES:
-            self.engine.addItem(label, key)
-            self.engine.setItemData(self.engine.count() - 1, tip,
-                                    Qt.ItemDataRole.ToolTipRole)
-        self.engine.setToolTip("What predicts the products. 'Both' compares them.")
-        form.addRow("Engine", self.engine)
-        form.addRow("Polymerase", self.polymerase)
-        form.addRow("Annealing Ta", self.fixed_ta)
-        form.addRow(self.circular)
-        form.addRow(self.probe)
-        form.addRow(self.seqext)
-        form.addRow(self.keep)
 
-        reset_row = QHBoxLayout()
-        reset_row.addStretch(1)
+        # JAR: autodetected; only the JAR engine needs it.
+        self.jar_edit = DropLineEdit(JAR_SUFFIXES)
+        self.jar_edit.setMinimumWidth(120)
+        self.jar_edit.setPlaceholderText("virtualPCR.jar")
+        self.jar_edit.setToolTip("Path to virtualPCR.jar — or drop the file here")
+        self.jar_edit.fileDropped.connect(lambda p: self._log(f"JAR: {p}"))
+        jar_row = QHBoxLayout()
+        jar_row.addWidget(self.jar_edit, 1)
+        browse = QPushButton("Browse")
+        browse.clicked.connect(self.pick_jar)
+        jar_row.addWidget(browse)
+
+        amp = QFormLayout()
+        amp.addRow("Min amplicon (bp)", self.min_len)
+        amp.addRow("Max amplicon (bp)", self.max_len)
+        amp.addRow("3' mismatches", self.err3)
+        amp.addRow(self.circular)
+        amp.addRow(self.probe)
+        amp.addRow(self.seqext)
+        score = QFormLayout()
+        score.addRow("Engine", self.engine)
+        score.addRow("Polymerase", self.polymerase)
+        score.addRow("Annealing Ta", self.fixed_ta)
+        run = QFormLayout()
+        run.addRow("virtualPCR JAR", jar_row)
+        run.addRow("Parallel jobs", self.workers)
+        run.addRow("JVM heap", self.heap)
+        run.addRow(self.keep)
+
         self.reset_btn = QPushButton("Reset to defaults")
         self.reset_btn.setToolTip(_defaults_tooltip())
         self.reset_btn.clicked.connect(lambda: self.reset_parameters(confirm=True))
-        reset_row.addWidget(self.reset_btn)
-        form.addRow(reset_row)
-
         self.reset_parameters()   # the widgets have no values until now
-        section("parameters", "Parameters", form)
 
-        # output
-        ol = QVBoxLayout()
-        orow = QHBoxLayout()
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        cols = QHBoxLayout()
+        cols.setSpacing(28)
+        cols.addWidget(self._group("Amplicon", amp), 1)
+        cols.addWidget(self._group("Biological score", score), 1)
+        cols.addWidget(self._group("Run", run), 1)
+        lay.addLayout(cols)
+        foot = QHBoxLayout()
+        foot.addStretch(1)
+        foot.addWidget(self.reset_btn)
+        lay.addLayout(foot)
+        return page
+
+    def _output_page(self) -> QWidget:
         self.out_edit = DropDirLineEdit()
         self.out_edit.setText(str(APP_ROOT / "output"))
-        self.out_edit.setMinimumWidth(120)
+        self.out_edit.setMinimumWidth(240)
         self.out_edit.setToolTip(
             "Each run is written to its own <primers>_<timestamp> subfolder here.\n"
             "Drop a folder to change it.")
+        orow = QHBoxLayout()
+        orow.addWidget(self.out_edit, 1)
         ob = QPushButton("Browse")
         ob.clicked.connect(self.pick_output_dir)
-        orow.addWidget(self.out_edit)
         orow.addWidget(ob)
-        ol.addLayout(orow)
-        lrow = QHBoxLayout()
-        lrow.addWidget(QLabel("Run label"))
         self.run_label = QLineEdit()
-        self.run_label.setMinimumWidth(120)
         self.run_label.setPlaceholderText("optional")
         self.run_label.setToolTip("Names the output subfolder instead of the primer pairs")
-        lrow.addWidget(self.run_label)
-        ol.addLayout(lrow)
         self.auto_export = QCheckBox("Auto-export when the run finishes")
         self.auto_export.setToolTip(
             "Write summary.csv, detail.csv, vpcr_results.xlsx and run_log.txt\n"
             "into a new subfolder as soon as the run completes")
         self.auto_export.setChecked(True)
-        ol.addWidget(self.auto_export)
-        section("output", "Output", ol)
+        form = QFormLayout()
+        form.addRow("Folder", orow)
+        form.addRow("Run label", self.run_label)
+        form.addRow(self.auto_export)
+        page = QWidget()
+        lay = QHBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addLayout(form, 2)
+        lay.addStretch(1)
+        return page
 
-        # Soaks up the leftover height when no expanded section wants it;
-        # without it QVBoxLayout spreads that height between the headers.
-        lay.addStretch(0)
-        self._left_layout = lay
-        self._tail_index = lay.count() - 1
-
-        # The sections scroll: with every one expanded they are taller than a
-        # 768 px screen, and folding them should be a choice, not a duty.
-        scroll = QScrollArea()
-        scroll.setWidget(w)
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        # Labels are kept short enough that the panel fits without it, but never
-        # forbid the bar: hiding a control is worse than showing a scrollbar.
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-
-        # Run sits outside the scroll area: it is the point of the panel, and
-        # inside it the sections could push it past the bottom of the screen.
-        host = QWidget()
-        host_lay = QVBoxLayout(host)
-        host_lay.setContentsMargins(0, 0, 0, 9)
-        host_lay.addWidget(scroll, 1)
-
-        run_row = QHBoxLayout()
-        run_row.setContentsMargins(9, 0, 9, 0)
-        self.run_btn = QPushButton("Run in silico PCR")
+    def _run_box(self) -> QWidget:
+        """Run, Cancel and progress: always in view, at the end of the strip."""
+        box = QWidget()
+        box.setFixedWidth(210)
+        v = QVBoxLayout(box)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(5)
+        self.run_btn = QPushButton("▶  Run in silico PCR")
+        self.run_btn.setProperty("primary", "true")
+        self.run_btn.setMinimumHeight(38)
         self.run_btn.clicked.connect(self.start_run)
+        v.addWidget(self.run_btn)
+        row = QHBoxLayout()
+        self.jobs_label = QLabel("")
+        self.jobs_label.setObjectName("muted")
+        row.addWidget(self.jobs_label, 1)
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.setEnabled(False)
         self.cancel_btn.clicked.connect(self.cancel_run)
-        run_row.addWidget(self.run_btn, 2)
-        run_row.addWidget(self.cancel_btn, 1)
-        host_lay.addLayout(run_row)
-
+        row.addWidget(self.cancel_btn)
+        v.addLayout(row)
         self.progress = QProgressBar()
-        host_lay.addWidget(self.progress)
-        host.setMinimumWidth(360)
-        return host
+        self.progress.setTextVisible(False)
+        v.addWidget(self.progress)
+        return box
 
-    def _build_right(self) -> QWidget:
+    def _on_targets_dropped(self, paths: list) -> None:
+        added = self.target_list.add_paths(paths)
+        if added:
+            self._log(f"Added {len(added)} target file(s)")
+
+    def _build_results(self) -> QWidget:
+        """Tabs across the full width, with the filter chips and Export above."""
         w = QWidget()
         lay = QVBoxLayout(w)
+        lay.setContentsMargins(14, 10, 14, 10)
+        lay.setSpacing(8)
         self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(False)
 
         self.summary_model = DataFrameModel()
         self.detail_model = DataFrameModel()
-        for model, title in ((self.summary_model, "Summary"),
-                             (self.detail_model, "Detail")):
+        views = []
+        for model in (self.summary_model, self.detail_model):
             view = QTableView()
             view.setModel(model)
             view.setSortingEnabled(False)
             view.setAlternatingRowColors(True)
             view.horizontalHeader().setSectionResizeMode(
                 QHeaderView.ResizeMode.ResizeToContents)
-            self.tabs.addTab(view, title)
+            views.append(view)
+        self.tabs.addTab(views[0], "Summary")
+
+        # The filters belong to the Detail table, so they sit on its page.
+        detail_page = QWidget()
+        dv = QVBoxLayout(detail_page)
+        dv.setContentsMargins(8, 8, 8, 0)
+        dv.setSpacing(6)
+        bar = QHBoxLayout()
+        self.detail_filter = ChipBar([f.chip or f.label for f in DETAIL_FILTERS],
+                                     [f.label for f in DETAIL_FILTERS])
+        self.detail_filter.currentIndexChanged.connect(self._apply_detail_filter)
+        self.detail_filter.setEnabled(False)
+        bar.addWidget(self.detail_filter, 1)
+        self.filter_count = QLabel("")
+        self.filter_count.setObjectName("muted")
+        bar.addWidget(self.filter_count, 0, Qt.AlignmentFlag.AlignTop)
+        dv.addLayout(bar)
+        dv.addWidget(views[1], 1)
+        self.tabs.addTab(detail_page, "Detail")
 
         # Primers drawn onto the amplified region, for a chosen pair/sequence.
         self.alignment_tab = AlignmentTab()
@@ -773,26 +947,16 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.log, "Log")
         lay.addWidget(self.tabs, 1)
 
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Detail rows:"))
-        self.detail_filter = QComboBox()
-        self.detail_filter.addItems([f.label for f in DETAIL_FILTERS])
-        # Its longest item would otherwise set the window's minimum width.
-        self.detail_filter.setSizeAdjustPolicy(
-            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        self.detail_filter.setMinimumContentsLength(14)
-        self.detail_filter.currentIndexChanged.connect(self._apply_detail_filter)
-        self.detail_filter.setEnabled(False)
-        row.addWidget(self.detail_filter)
-        self.filter_count = QLabel("")
-        row.addWidget(self.filter_count)
-
-        self.export_btn = QPushButton("Export results (Excel + CSV)")
+        # Export applies to every tab, so it sits on the tab bar itself.
+        self.export_btn = QPushButton("Export Excel + CSV")
+        self.export_btn.setProperty("compact", "true")
         self.export_btn.setEnabled(False)
         self.export_btn.clicked.connect(self.export_results)
-        row.addStretch(1)
-        row.addWidget(self.export_btn)
-        lay.addLayout(row)
+        corner = QWidget()
+        cl = QHBoxLayout(corner)
+        cl.setContentsMargins(0, 0, 0, 3)
+        cl.addWidget(self.export_btn)
+        self.tabs.setCornerWidget(corner, Qt.Corner.TopRightCorner)
         return w
 
     def _apply_detail_filter(self) -> None:
@@ -831,6 +995,7 @@ class MainWindow(QMainWindow):
         and Windows offers to kill it. processEvents once lets the cursor and
         message paint before the blocking call starts.
         """
+        before = self.statusBar().currentMessage()
         self.statusBar().showMessage(message)
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         QApplication.processEvents()
@@ -838,6 +1003,9 @@ class MainWindow(QMainWindow):
             yield
         finally:
             QApplication.restoreOverrideCursor()
+            # Put back what was there, unless the step said something new.
+            if self.statusBar().currentMessage() == message:
+                self.statusBar().showMessage(before)
 
     def _autodetect_jar(self) -> None:
         """Pick the newest JAR that some installed JRE can actually run."""
@@ -1232,8 +1400,8 @@ class MainWindow(QMainWindow):
 def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
-    apply_button_style(app)
-    win = MainWindow()
+    theme.follow_system(app)
+    win = MainWindow()   # applies the saved theme before building anything
     win.show()
     return app.exec()
 

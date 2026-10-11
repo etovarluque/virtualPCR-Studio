@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFormLayout,
                              QTableWidgetItem, QVBoxLayout, QWidget)
 
 from vpcr.core.primers import PrimerFileError, detect_columns, pairs_from_rows
+from vpcr.gui.theme import tok
 
 NONE_LABEL = "— none —"
 
@@ -110,7 +111,7 @@ class ColumnMapDialog(QDialog):
         except PrimerFileError as e:
             self.pairs = []
             self.preview.setRowCount(0)
-            self.status.setText(f"<span style='color:#b00'>{e}</span>")
+            self.status.setText(f"<span style='color:{tok('bad')}'>{e}</span>")
             ok_btn.setEnabled(False)
             return
 

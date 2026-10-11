@@ -13,6 +13,8 @@ project linked above.
 
 ![virtualPCR Studio](screenshot/screenshot_vpcr_gui.png)
 
+![virtualPCR Studio, dark theme](screenshot/screenshot_vpcr_gui_dark.png)
+
 ## Running it
 
 Double-click **`Run vPCR.bat`**. It finds Python, installs the dependencies the
@@ -63,62 +65,61 @@ vpcr_app/
       primer_io.py      loading a primer file with the user in the loop
       column_dialog.py  manual column mapping for primer tables
       dnd.py            drag-and-drop file widgets, including the drop zone
-      collapsible.py    foldable panel sections
+      setup_strip.py    the setup tiles and the filter chips
+      theme.py          light and dark themes, from one set of colour tokens
       widgets.py        spin boxes and combos that ignore the mouse wheel
 ```
 
-## The left panel on a small screen
+## The window
 
-Fully expanded the panel is taller than a 768 px screen. Each section —
-*virtualPCR JAR*, *Target FASTA files*, *Primers*, *Parameters*, *Output* —
-folds away by clicking its header; folded, all five take ~250 px. The panel also
-scrolls, so nothing is unreachable with everything open: folding is a
-convenience, not a chore.
-
-Every header carries a dimmed summary on the right, so a folded section still
-tells you what it holds:
+Setup runs across the top, results fill the rest:
 
 ```
-▸ virtualPCR JAR                       virtualPCR.jar
-▸ Target FASTA files                          2 files
-▸ Primers                     6F / 10R • 7 of 10 pairs
-▸ Parameters             90–2200 bp • 1 mm • circular
-▸ Output                    ensayo COI • auto-export
+┌ TARGETS ✓ ──────┐┌ PRIMERS ✓ ─────┐┌ PARAMETERS ✓ ────────┐┌ OUTPUT ✓ ──────┐ ▶ Run in silico PCR
+│ 2 FASTA files   ││ 7 of 10 pairs  ││ 90–2200 bp · 1 mm    ││ ensayo COI     │   14 jobs   Cancel
+│ mito.fasta +1   ││ 6 F · 10 R     ││ circular · OneTaq ·… ││ auto-export    │   ━━━━━━━━━━━━━━
+└─────────────────┘└────────────────┘└──────────────────────┘└────────────────┘
+ Summary │ Detail │ Alignment │ Primer map │ Log                   Export Excel + CSV
 ```
 
-*virtualPCR JAR* starts folded, since it is detected automatically. Folding only
-hides: a collapsed *Parameters* still applies its values.
+Each **tile** summarises its section and shows a ✓ once that section is ready
+for a run: targets added, at least one pair ticked, a JAR found (or the built-in
+engine chosen), an output folder. Its tooltip holds the full detail.
 
-**Run in silico PCR** and the progress bar sit *outside* the scroll area, pinned
-to the bottom of the panel. Inside it they could be scrolled out of reach, which
-is a poor place for the button the whole panel exists to press.
+**Click a tile** to open its form in the **drawer** under the strip; click it
+again, or another tile, to close or switch. The drawer is as tall as the open
+form and no taller, and the strip never grows, so the results keep the height.
+*Parameters* lays its form out in three columns: *Amplicon*, *Biological score*
+and *Run* (which holds the JAR path). *View → … settings* opens a drawer from
+the menu too.
 
-No section carries a stretch factor any more, so none of them grows to fill the
-panel. *Target FASTA files* used to be the only one that did, and it swallowed
-every spare pixel: 192 px to list two files. It is now capped at 115 px — four
-rows, then it scrolls. The cap has to be a `maximumHeight`: `QAbstractScrollArea`
-hands out a 256 x 192 `sizeHint` that a smaller `minimumHeight` does nothing
-about.
+**Drop files on the tiles.** FASTA files or a folder on *Targets*, a primer
+file on *Primers*; the tile outlines in the accent colour for a usable file
+and in red for one it cannot take. The drop zones inside the drawers still work.
 
-The window size and position, the splitter between the panels, and which
-sections are folded are all remembered between sessions, in `QSettings` under
-`IAvH / virtualPCR Studio`. Two details make that reliable:
+**Run** sits at the end of the strip with the job count (pairs × files, doubled
+when comparing engines), Cancel and the progress bar, always in view.
 
-* The splitter is restored on the first `showEvent`, not in the constructor.
-  Restored before the window has its final width, it redistributes its panes as
-  soon as that width arrives, and the saved position is lost.
-* Closing the console that launched the app kills the process without a
-  `closeEvent`. So a resize or a splitter drag schedules a save 400 ms later and
-  flushes it with `sync()`, rather than relying on a clean shutdown.
+The Detail filters are chips on the Detail tab; *Export* sits on the tab bar,
+since it writes every table.
 
-Minimum window size is 791 x 192. It used to be 1124 wide: the three primer
-tables set that floor, and moving them into their own window removed it.
+**Light and dark.** The button at the right of the menu bar switches theme;
+*View → Theme* also offers *Follow Windows*, the default, which tracks the
+Windows app setting live. Every colour comes from one set of tokens in
+`gui/theme.py` — the Qt palette, the style sheet, the result-table highlights
+and the Alignment HTML — so nothing is left light-on-light or dark-on-dark.
+
+The window size and position and the theme are remembered between sessions, in
+`QSettings` under `IAvH / virtualPCR Studio`. Closing the console that launched
+the app kills the process without a `closeEvent`, so a resize schedules a save
+400 ms later and flushes it with `sync()` rather than relying on a clean
+shutdown. Minimum window size is 900 × 560.
 
 ## Parameter defaults
 
 *Parameters* ends in **Reset to defaults**, disabled while nothing has changed
 and asking for confirmation when something has. Its tooltip lists the values it
-would restore; the header summary appends `• modified` while any of them differs.
+would restore; the tile appends `modified` while any of them differs.
 
 The defaults live in one place, `PARAM_DEFAULTS` in `gui/main_window.py`, and
 the widgets are built empty and filled from it — so the button cannot drift from
@@ -248,9 +249,8 @@ loading a file fills three tables — **Forward**, **Reverse**, and the **Pairs 
 run** the file suggests. A primer used by several pairs is listed once.
 
 Those tables live in their own resizable window, **View/Select primers**, reached
-from the button in the *Primers* section or from the *File* menu. They were in
-the left panel and lost: with six primers loaded the panel showed two and a half
-rows of each and truncated every sequence. A splitter divides the oligos from
+from the button in the *Primers* drawer or from the *File* menu. A splitter
+divides the oligos from
 the pairs, and both the window size and that split are remembered between
 sessions.
 
@@ -263,8 +263,8 @@ The pairs table stays editable — untick a combination, delete it, or type one 
 by hand. Only ticked pairs run. **Use these pairs** applies the lot; *Cancel*
 leaves the run configuration exactly as it was.
 
-The left panel keeps the summary — how many pairs are ticked, out of how many,
-from how many oligos — the drop zone, and **Clear**, which forgets the loaded
+The *Primers* drawer keeps the summary — how many pairs are ticked, out of how
+many, from how many oligos — the drop zone, and **Clear**, which forgets the loaded
 file so another can be dropped in its place. It is what you need to see while
 setting up a run; the tables are what you need while choosing primers, which is
 a different task. The dialog carries no drop zone of its own: by the time it
@@ -277,6 +277,7 @@ reverse in the file.
 
 Each field accepts only what it can use, and refuses the rest at the cursor:
 
+* **Targets tile** and **Primers tile** — as the list and the zone below
 * **JAR field** — a `.jar`
 * **Target list** — FASTA files, or a folder (its `.fasta/.fa/.fas/.fna/.ffn/.frn`
   files are added; `.txt` only when dropped explicitly, so a folder drop does not
@@ -381,7 +382,7 @@ scored at its own Ta, in this order:
 per call and `pct_likely` (strong + probable). `detail.csv` adds per site
 `dg`, `bound`, `ext3`, `efficiency` and `mismatch_detail` (`3'+0 C·A` = the
 3'-terminal base, primer C facing template A). The Alignment tab shows the same.
-*Detail rows* filters on *Likely* and *Doubtful*. CLI: `--polymerase`, `--ta`,
+The Detail chips filter on *Likely* and *Doubtful*. CLI: `--polymerase`, `--ta`,
 and `--no-score` for the JAR's predictions alone.
 
 **Read the calls as a ranking of risk, not as probabilities.** The
@@ -418,7 +419,7 @@ methods; where they do not, look closer. The run adds:
   and pair, what each engine predicted, sizes, the built-in call and delay,
   and `agreement` — `both`, `neither`, `jar only` or `thermo only`;
 * an `engine` column in the tables, and `pct_engine_agreement` per pair;
-* *Detail rows → Engines disagree*; the Alignment tab labels each entry
+* the *Engines disagree* chip on Detail; the Alignment tab labels each entry
   `[JAR]` or `[built-in]`.
 
 Agreement is not proof: two engines can share a blind spot. Calibration
@@ -511,8 +512,9 @@ In `detail.csv` each amplicon is its own row, so a sequence with three products
 appears three times; filter on either column. `summary.csv` aggregates them as
 `n_multi_amplicon` and `n_multiband`.
 
-The GUI's *Detail rows* dropdown filters the table in place: *All*, *Amplified*,
-*Not amplified*, *Multi-amplicon (>1 product)*, *Multiband (>1 size)*.
+The chips on the Detail tab filter the table in place: *All*, *Amplified*,
+*Not amplified*, *Multi-product*, *Multiband*, and from the biological score
+*Likely* and *Doubtful*, plus *Engines disagree* when comparing engines.
 
 Across 13,522 mitogenomes with `L15411F|H15546R`, 33 sequences gave more than
 one product but only 3 gave more than one size. Two duplicated

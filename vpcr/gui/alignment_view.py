@@ -23,6 +23,8 @@ from PyQt6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QSizePolicy,
                              QTextBrowser, QVBoxLayout, QWidget)
 
 from vpcr.core.model import Amplicon, PairResult, PrimerHit, SequenceResult
+from vpcr.gui import theme
+from vpcr.gui.theme import tok as _c
 
 # A single pair can amplify more sequences than a combo box should hold; past
 # this the list is truncated with a note. The full detail is in the Detail tab
@@ -82,21 +84,25 @@ def _best_target_offset(primer: str, match: str, target: str) -> int:
 
 # -- HTML colouring ----------------------------------------------------------
 
-_STYLE = {
-    "match": "",
-    "degen": "color:#c77d00;font-weight:bold;",       # ':' partial/degenerate
-    "mism": "color:#d11a1a;font-weight:bold;",         # blank: hard mismatch
-    "mism3": "color:#d11a1a;font-weight:bold;background:#ffe08a;",  # 3'-terminal
-    "flank": "color:#9a9a9a;",                         # context outside the primer
-    "fwd": "background:#cde7d3;color:#10331b;",         # forward footprint
-    "rev": "background:#cfe0f5;color:#0e2a45;",         # reverse footprint
-    "plain": "",
-}
+def _styles() -> dict[str, str]:
+    """Cell styles from the theme in effect, so the HTML follows light/dark."""
+    return {
+        "match": "",
+        "degen": f"color:{_c('warn')};font-weight:bold;",      # ':' partial/degenerate
+        "mism": f"color:{_c('bad')};font-weight:bold;",        # blank: hard mismatch
+        "mism3": (f"color:{_c('bad')};font-weight:bold;"       # 3'-terminal
+                  f"background:{_c('mark_bg')};"),
+        "flank": f"color:{_c('muted')};",                      # context outside the primer
+        "fwd": f"background:{_c('fwd_bg')};color:{_c('fwd_ink')};",   # forward footprint
+        "rev": f"background:{_c('rev_bg')};color:{_c('rev_ink')};",   # reverse footprint
+        "plain": "",
+    }
 
 
 def _spanify(cells: list[tuple[str, str]]) -> str:
     """Render (char, kind) cells to HTML, coalescing runs of one kind."""
     out: list[str] = []
+    styles = _styles()
     i = 0
     while i < len(cells):
         kind = cells[i][1]
@@ -104,7 +110,7 @@ def _spanify(cells: list[tuple[str, str]]) -> str:
         while j < len(cells) and cells[j][1] == kind:
             j += 1
         text = escape("".join(c for c, _ in cells[i:j]))
-        style = _STYLE.get(kind, "")
+        style = styles.get(kind, "")
         out.append(f"<span style='{style}'>{text}</span>" if style else text)
         i = j
     return "".join(out)
@@ -171,9 +177,9 @@ def _alignment_block(role: str, hit: PrimerHit) -> str:
         + (f", nearest {min(offsets_3p)} nt from 3'" if offsets_3p else ""))
     head = (f"<b>{escape(role)}</b> &nbsp; {escape(hit.primer_name or '?')} &nbsp; "
             f"pos {hit.start:,}&ndash;{hit.end:,} &nbsp; {hit.identity:g}% id &nbsp; "
-            f"Tm {hit.tm:g}&deg;C &nbsp; <span style='color:#555'>{mm_note}</span>")
+            f"Tm {hit.tm:g}&deg;C &nbsp; <span style='color:{_c('muted')}'>{mm_note}</span>")
     if (sc := hit.score) is not None:
-        head += (f"<br><span style='color:#555'>score: &Delta;G {sc.dg:g} kcal/mol"
+        head += (f"<br><span style='color:{_c('muted')}'>score: &Delta;G {sc.dg:g} kcal/mol"
                  f" &middot; bound {100 * sc.bound:.0f}%"
                  f" &middot; 3&prime; extension &times;{sc.extension:.2f}"
                  + (f" &middot; degeneracy {sc.degeneracy}" if sc.degeneracy > 1 else "")
@@ -190,7 +196,7 @@ def _wrap_sequence(cells: list[tuple[str, str]], start: int, width: int = 60) ->
     lines = []
     for i in range(0, len(cells), width):
         chunk = cells[i:i + width]
-        lines.append(f"<span style='color:#9a9a9a'>{start + i:>7} </span>"
+        lines.append(f"<span style='color:{_c('muted')}'>{start + i:>7} </span>"
                      f"{_spanify(chunk)}")
     return "\n".join(lines)
 
@@ -201,10 +207,10 @@ def _product_map(amp: Amplicon, fwd: PrimerHit | None, rev: PrimerHit | None) ->
     call = (f" &nbsp; <b>{escape(amp.call)}</b> (+{amp.delta_cq:g} cycles)"
             if amp.call and amp.delta_cq is not None else "")
     head = (f"<div style='margin:4px 0'><b>Amplicon</b> &nbsp; {amp.size:,} bp"
-            f"{ta}{call} &nbsp; <span style='color:#555'>pos {amp.start:,}&ndash;"
+            f"{ta}{call} &nbsp; <span style='color:{_c('muted')}'>pos {amp.start:,}&ndash;"
             f"{amp.end:,}</span></div>")
     if not seq:
-        return (head + "<p style='color:#777'><i>No product sequence available "
+        return (head + f"<p style='color:{_c('muted')}'><i>No product sequence available "
                 "(Extract amplicon sequences was off).</i></p>")
 
     lf = len(fwd.primer_seq) if fwd else 0
@@ -217,8 +223,8 @@ def _product_map(amp: Amplicon, fwd: PrimerHit | None, rev: PrimerHit | None) ->
             kinds[k] = "rev"
 
     legend = ("<div style='margin:2px 0 4px;font-size:12px'>"
-              "<span style='" + _STYLE["fwd"] + "'>&nbsp;forward&nbsp;</span> &nbsp; "
-              "<span style='" + _STYLE["rev"] + "'>&nbsp;reverse&nbsp;</span></div>")
+              "<span style='" + _styles()["fwd"] + "'>&nbsp;forward&nbsp;</span> &nbsp; "
+              "<span style='" + _styles()["rev"] + "'>&nbsp;reverse&nbsp;</span></div>")
 
     # Elide a long interior: the primer footprints sit at the two ends, so a
     # multi-kb product need not be shown whole to make the point.
@@ -228,7 +234,7 @@ def _product_map(amp: Amplicon, fwd: PrimerHit | None, rev: PrimerHit | None) ->
         tail_cells = [(seq[k], kinds[k]) for k in range(len(seq) - keep, len(seq))]
         gap = len(seq) - 2 * keep
         body = (_wrap_sequence(head_cells, 1)
-                + f"\n<span style='color:#9a9a9a'>        … {gap:,} bp …</span>\n"
+                + f"\n<span style='color:{_c('muted')}'>        … {gap:,} bp …</span>\n"
                 + _wrap_sequence(tail_cells, len(seq) - keep + 1))
     else:
         body = _wrap_sequence([(seq[k], kinds[k]) for k in range(len(seq))], 1)
@@ -246,20 +252,20 @@ def _flanking(seq: SequenceResult, amp: Amplicon) -> tuple[PrimerHit | None, Pri
 
 
 def _render(pair_name: str, res: PairResult, seq: SequenceResult) -> str:
-    parts = [f"<div style='font-size:13px;color:#333;margin-bottom:6px'>"
+    parts = [f"<div style='font-size:13px;color:{_c('ink')};margin-bottom:6px'>"
              f"<b>{escape(pair_name)}</b> on <code>{escape(res.pair.forward)}</code> / "
              f"<code>{escape(res.pair.reverse)}</code><br>"
              f"target <code>{escape(seq.header)}</code> "
-             f"<span style='color:#777'>({escape(Path(res.target_file).name)})</span></div>"]
+             f"<span style='color:{_c('muted')}'>({escape(Path(res.target_file).name)})</span></div>"]
 
     if not seq.amplicons:
-        parts.append("<p style='color:#777'>No predicted amplicon for this sequence.</p>")
+        parts.append(f"<p style='color:{_c('muted')}'>No predicted amplicon for this sequence.</p>")
     for n, amp in enumerate(seq.amplicons, 1):
         fwd, rev = _flanking(seq, amp)
         if len(seq.amplicons) > 1:
             parts.append(f"<h3 style='margin:14px 0 2px'>Product {n} of "
                          f"{len(seq.amplicons)}</h3>")
-        parts.append("<hr style='border:none;border-top:1px solid #ddd'>")
+        parts.append(f"<hr style='border:none;border-top:1px solid {_c('line')}'>")
         parts.append(_product_map(amp, fwd, rev))
         # When the sequences were not extracted the amplicon carries no
         # coordinates, so it cannot be tied to specific hits; show every hit.
@@ -284,6 +290,8 @@ class AlignmentTab(QWidget):
         self._results: list[PairResult] = []
         # Parallel to seq_combo's items: the (result, sequence) each row means.
         self._seq_entries: list[tuple[PairResult, SequenceResult]] = []
+        self._placeholder_msg = ""
+        theme.bus().changed.connect(self._on_theme)
 
         lay = QVBoxLayout(self)
         row = QHBoxLayout()
@@ -306,7 +314,7 @@ class AlignmentTab(QWidget):
         lay.addLayout(row)
 
         self.count_label = QLabel("")
-        self.count_label.setStyleSheet("color:#777")
+        self.count_label.setObjectName("muted")
         lay.addWidget(self.count_label)
 
         self.view = QTextBrowser()
@@ -381,7 +389,15 @@ class AlignmentTab(QWidget):
         res, seq = self._seq_entries[i]
         self.view.setHtml(_render(self.pair_combo.currentText(), res, seq))
 
+    def _on_theme(self, *_) -> None:
+        """Redraw: the HTML carries the theme's colours inline."""
+        if 0 <= self.seq_combo.currentIndex() < len(self._seq_entries):
+            self._on_seq_changed()
+        elif self._placeholder_msg:
+            self._show_placeholder(self._placeholder_msg)
+
     # -- helpers -----------------------------------------------------------
 
     def _show_placeholder(self, msg: str) -> None:
-        self.view.setHtml(f"<div style='padding:24px;color:#888'>{escape(msg)}</div>")
+        self._placeholder_msg = msg
+        self.view.setHtml(f"<div style='padding:24px;color:{_c('muted')}'>{escape(msg)}</div>")
