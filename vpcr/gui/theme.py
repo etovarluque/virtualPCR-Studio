@@ -294,7 +294,8 @@ def stylesheet(t: dict[str, str], a: dict[str, str] | None = None) -> str:
                   image: url({a.get('down_dis', '')}); }}
 
     /* Check boxes: a visible frame at rest, a filled accent box when ticked. */
-    QCheckBox {{ spacing: 8px; color: {t['ink']}; }}
+    /* As tall as an input, so form rows keep one rhythm whatever they hold. */
+    QCheckBox {{ spacing: 8px; color: {t['ink']}; min-height: 30px; }}
     QCheckBox::indicator {{ width: 16px; height: 16px; border-radius: 4px;
                   border: 2px solid {t['muted']}; background: {t['card']}; }}
     QCheckBox::indicator:hover {{ border-color: {t['accent']}; }}

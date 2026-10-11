@@ -354,8 +354,18 @@ class MainWindow(QMainWindow):
                             QSizePolicy.Policy.Preferred if w is page
                             else QSizePolicy.Policy.Ignored)
         self._drawer_stack.setCurrentWidget(page)
+        # Exactly the height the form asks for: any less and the longest
+        # column (Amplicon) is the one squeezed, so the columns lose their
+        # common row rhythm.
+        self._drawer_stack.setFixedHeight(page.sizeHint().height())
         self.drawer.setVisible(True)
-        self._drawer_stack.adjustSize()
+        # Relayout now rather than on the next pass, or switching forms shows
+        # one frame at the previous form's height.
+        # activate() does not reach into child widgets' layouts, so each level
+        # is activated from the inside out.
+        for widget in (self.drawer, self.drawer.parentWidget(), self.centralWidget()):
+            if widget is not None and widget.layout() is not None:
+                widget.layout().activate()
 
     # -- section summaries -------------------------------------------------
 
@@ -624,7 +634,7 @@ class MainWindow(QMainWindow):
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
 
-        host.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        host.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         strip = QFrame()
         strip.setObjectName("strip")
         strip.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
@@ -634,7 +644,7 @@ class MainWindow(QMainWindow):
 
         self.drawer = QFrame()
         self.drawer.setObjectName("drawer")
-        self.drawer.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        self.drawer.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self._drawer_stack = QStackedWidget()
         dl = QVBoxLayout(self.drawer)
         dl.setContentsMargins(14, 12, 14, 14)
