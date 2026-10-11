@@ -77,6 +77,8 @@ class Polymerase:
     dntp_mM: float
     primer_nM: float
     note: str
+    # Extension rate, kb per minute: what one cycle's extension can copy.
+    kb_per_min: float = 1.0
 
 
 POLYMERASES: dict[str, Polymerase] = {p.key: p for p in (
@@ -86,15 +88,19 @@ POLYMERASES: dict[str, Polymerase] = {p.key: p for p in (
         # MgCl2; 200 uM of each dNTP; 0.2 uM of each primer.
         44.0, 1.8, 0.8, 200.0,
         "Taq + Deep Vent blend: the 3'->5' exonuclease can trim a 3' mismatch, "
-        "so terminal mismatches cost less than with Taq alone."),
+        "so terminal mismatches cost less than with Taq alone.",
+        # NEB: 1 min/kb for OneTaq.
+        1.0),
     Polymerase(
         "taq", "Taq (no proofreading)", 1.0, -5.0,
         50.0, 1.5, 0.8, 200.0,
-        "No 3'->5' exonuclease: the most sensitive to 3' mismatches."),
+        "No 3'->5' exonuclease: the most sensitive to 3' mismatches.", 1.0),
     Polymerase(
         "hifi", "High-fidelity (Q5, Phusion)", 0.4, 3.0,
         50.0, 2.0, 0.8, 500.0,
-        "Strong 3'->5' exonuclease. NEB anneals these at the lower Tm + 3 C."),
+        "Strong 3'->5' exonuclease. NEB anneals these at the lower Tm + 3 C.",
+        # NEB: 20-30 s/kb for Q5; the slower end, to stay conservative.
+        2.0),
 )}
 DEFAULT_POLYMERASE = "onetaq"
 
@@ -106,6 +112,8 @@ class Reaction:
     # One annealing temperature for every pair, or None to use each pair's own
     # (PrimerPair.ta) and fall back to lower Tm + the polymerase's offset.
     ta: float | None = None
+    # Extension time per cycle, in seconds; None leaves length out of the score.
+    extension_s: float | None = 60.0
 
     @property
     def profile(self) -> Polymerase:
@@ -266,6 +274,38 @@ def score_site(primer: str, site: str, ta: float,
     return SiteScore(round(dg, 2), bound, ext, bound * ext, text, len(mism), D, tm)
 
 
+# Extension goes on through the ramp from the extension to the denaturation
+# temperature, so a cycle copies a little more than its hold time alone allows.
+_RAMP_S = 10.0
+# The cycle at which a well amplifying product crosses the threshold, used to
+# turn a per-cycle loss into a delay. A starting value, as the weights above.
+_REF_CQ = 25.0
+
+
+def extension_capacity(reaction: Reaction) -> float | None:
+    """Bases the polymerase copies in one cycle's extension; None if not set."""
+    if reaction.extension_s is None:
+        return None
+    return reaction.profile.kb_per_min * 1000.0 * (reaction.extension_s + _RAMP_S) / 60.0
+
+
+def length_delay(size: int, reaction: Reaction | None) -> float:
+    """Cycle delay of a product too long to finish in the extension time.
+
+    Unlike a 3' mismatch, which costs only until the first copies carry the
+    primer's own sequence, length costs in every cycle: if a share e of the
+    strands is completed per cycle, the product grows (1 + e)-fold instead of
+    2-fold, and reaches the threshold at Cq * ln 2 / ln(1 + e) instead of Cq.
+    e is the capacity over the length. A product 10% too long costs ~2
+    cycles; twice too long, ~18, i.e. unlikely.
+    """
+    cap = extension_capacity(reaction) if reaction is not None else None
+    if cap is None or size <= 0 or size <= cap:
+        return 0.0
+    e = cap / size
+    return min(_MAX_DELAY, _REF_CQ * (math.log(2) / math.log1p(e) - 1.0))
+
+
 def delta_cq(f: SiteScore, r: SiteScore) -> float:
     eff = f.efficiency * r.efficiency
     return _MAX_DELAY if eff <= 0 else min(_MAX_DELAY, -math.log2(eff))
@@ -313,7 +353,7 @@ def _flanking(seq: SequenceResult, amp: Amplicon) -> tuple[PrimerHit | None, Pri
 
 
 def score_sequence(seq: SequenceResult, template: str, pair: PrimerPair,
-                   ta: float, polymerase: str) -> int:
+                   ta: float, polymerase: str, reaction: Reaction | None = None) -> int:
     """Score every amplicon of one sequence. Returns how many were scored."""
     n = 0
     for amp in seq.amplicons:
@@ -329,7 +369,8 @@ def score_sequence(seq: SequenceResult, template: str, pair: PrimerPair,
                     hit.score = score_site(primer, site, ta, polymerase)
             scores.append(hit.score)
         if all(scores):
-            amp.delta_cq = round(delta_cq(*scores), 2)
+            amp.length_delay = round(length_delay(amp.size, reaction), 2)
+            amp.delta_cq = round(min(_MAX_DELAY, delta_cq(*scores) + amp.length_delay), 2)
             amp.call = call_for(amp.delta_cq)
             n += 1
     return n
@@ -360,7 +401,8 @@ def score_result(result: PairResult, fasta_path: str | Path, reaction: Reaction)
             continue
         for k, s in enumerate(cands):
             if _belongs_to(s, template):
-                scored += score_sequence(s, template, result.pair, ta, reaction.polymerase)
+                scored += score_sequence(s, template, result.pair, ta, reaction.polymerase,
+                                         reaction)
                 del cands[k]
                 break
         if not cands:

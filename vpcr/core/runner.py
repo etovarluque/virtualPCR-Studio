@@ -18,19 +18,21 @@ import tempfile
 import threading
 import zipfile
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Iterable
 
 from .model import PairResult, PrimerPair, RunConfig
-from .parser import fasta_headers, finalize, parse_report
+from .parser import fasta_headers, finalize, iter_fasta, parse_report
 from .primers import write_pair_fasta
 from .scoring import Reaction, score_result
 from .thermo_engine import run_thermo
+from .topology import circular_for
 
 # 'jar' runs virtualPCR, 'thermo' the built-in engine, 'both' runs each pair
-# through both so their predictions can be compared.
-ENGINES = ("jar", "thermo", "both")
+# through both so their predictions can be compared, and 'auto' is the JAR
+# when a Java on this machine can run it, else the built-in engine.
+ENGINES = ("auto", "jar", "thermo", "both")
 
 # Java class file major version -> feature release (45 == Java 1.1)
 _CLASS_MAJOR_BASE = 44
@@ -224,6 +226,100 @@ def check_compatibility(jar: str | Path, java: JavaInfo) -> None:
         )
 
 
+def resolve_engine(engine: str, jar: str | Path | None,
+                   java_path: str | None = None) -> tuple[str, str]:
+    """`engine` with 'auto' settled, and why: the JAR when it can run here,
+    else the built-in engine. The reason is empty for any other choice."""
+    if engine != "auto":
+        return engine, ""
+    if jar is None or not Path(jar).is_file():
+        return "thermo", "no virtualPCR.jar"
+    try:
+        select_java(jar, java_path)
+    except JarError as e:
+        return "thermo", str(e)
+    return "jar", ""
+
+
+def _linearize_circles(target: Path, setting: bool | str, max_len: int,
+                       workdir: Path) -> tuple[Path, dict[str, int]]:
+    """The file the JAR reads, and its circular records (header -> length).
+
+    The JAR's own circular mode is not used: run on the 2026-07-08 build, it
+    reports every product a second time at its size plus the template length
+    (a turn of the circle no polymerase makes), gives products across the
+    origin no coordinates and a size one base short, misplaces a site that
+    starts at base 1, and scores a site cut by the origin at a fraction of
+    its identity. Its linear mode has none of these faults. So each circular
+    record is written with its first bases appended, as many as the longest
+    product needs, and searched as a line; _fold_circular maps the result
+    back onto the circle. With no circular record the target is used as is.
+    """
+    circ: dict[str, int] = {}
+    if setting is False or setting == "linear":
+        return target, circ
+    out = workdir / (target.name or "target.fasta")
+    with open(out, "w", encoding="utf-8") as fh:
+        for header, seq in iter_fasta(target):
+            n = len(seq)
+            if n and circular_for(setting, header, n):
+                circ[header] = n
+                seq = seq + seq[:min(n, max_len) - 1]
+            fh.write(f">{header}\n")
+            for i in range(0, len(seq), 80):
+                fh.write(seq[i:i + 80] + "\n")
+    if not circ:
+        out.unlink(missing_ok=True)
+        return target, circ
+    return out, circ
+
+
+def _fold_circular(result: PairResult, circ: dict[str, int]) -> None:
+    """Map hits and products on an extended record back onto its circle.
+
+    A site or product that starts in the appended copy is the same one found
+    at start - n, and is dropped; one that starts before the end and runs
+    into the copy crosses the origin, and its end is folded (end < start).
+    A product longer than the circle would need a full turn: dropped.
+    """
+    for seq in result.sequences:
+        n = circ.get(seq.header)
+        if not n:
+            continue
+        hits = []
+        for h in seq.hits:
+            if h.start > n:
+                continue
+            if h.end > n:
+                h.end -= n
+            hits.append(h)
+        seq.hits = hits
+        amps = []
+        for a in seq.amplicons:
+            if a.start > n or a.size > n:
+                continue
+            if a.end > n:
+                a.end -= n
+            amps.append(a)
+        seq.amplicons = amps
+        seq.total_amplicons = len(amps)
+        seq.unique_sizes = len({a.size for a in amps})
+        seq.reported_sizes = [(z, ta) for z, ta in seq.reported_sizes if z <= n]
+
+
+def _run_jar_task(task, prepared: tuple[Path, dict[str, int]], headers: list[str],
+                  jar, java, config, heap, keep, repair, processes, reaction) -> PairResult:
+    """One JAR job: always in linear mode, circles linearized beforehand."""
+    path, circ = prepared
+    result = run_one(RunTask(task.pair, path, "jar"), jar, java,
+                     replace(config, circular=False), heap, keep, headers, repair,
+                     processes, reaction)
+    if circ:
+        _fold_circular(result, circ)
+    result.target_file = str(task.target)
+    return result
+
+
 def _link_or_copy(src: Path, dst: Path) -> None:
     """Give the JAR its own target path without duplicating a large FASTA."""
     try:
@@ -360,9 +456,14 @@ def run_batch(
     engine always scores, with `reaction` or the default one, and needs
     neither Java nor the JAR. With 'both', each pair yields two results,
     told apart by PairResult.engine.
+
+    With `config.circular == 'auto'` each record is searched as a circle or a
+    line on its own (topology.py). The built-in engine handles circles
+    itself; the JAR is given them linearized (see _linearize_circles).
     """
     if engine not in ENGINES:
         raise ValueError(f"engine must be one of {ENGINES}, not {engine!r}")
+    engine, _ = resolve_engine(engine, jar, java_path)
     engines = ["jar", "thermo"] if engine == "both" else [engine]
     if "thermo" in engines and reaction is None:
         reaction = Reaction()
@@ -393,6 +494,21 @@ def run_batch(
                            "pip install primer3-py") from e
 
     header_cache = {t: fasta_headers(t) for t in targets} if "jar" in engines else {}
+    # What the JAR reads per target: the file itself, or a copy with its
+    # circular records linearized, written once for every pair.
+    split_dir = None
+    prepared: dict[Path, tuple[Path, dict[str, int]]] = {}
+    if "jar" in engines:
+        for t in targets:
+            if config.circular is not False and config.circular != "linear" \
+                    and split_dir is None:
+                split_dir = Path(tempfile.mkdtemp(prefix="vpcr_circles_"))
+            folder = None
+            if split_dir is not None:
+                folder = split_dir / str(len(prepared))
+                folder.mkdir()
+            prepared[t] = _linearize_circles(t, config.circular, config.max_len, folder) \
+                if folder is not None else (t, {})
     # Engines adjacent per pair, so a pair's two results sit side by side.
     tasks = [RunTask(p, t, e) for t in targets for p in pairs for e in engines]
     total = len(tasks)
@@ -424,8 +540,8 @@ def run_batch(
                 keep = (reports_dir / report_folder[t.target] / f"{_safe(t.pair.name)}.out"
                         if reports_dir else None)
                 fut = pool.submit(
-                    run_one, t, jar, java, config, heap, keep, header_cache[t.target],
-                    repair, processes, reaction)
+                    _run_jar_task, t, prepared[t.target], header_cache[t.target], jar,
+                    java, config, heap, keep, repair, processes, reaction)
             futures[fut] = (i, t)
 
         # Polled rather than blocked on as_completed: a single JAR run can take
@@ -460,5 +576,7 @@ def run_batch(
                 if progress:
                     tag = f" [{t.engine}]" if len(engines) > 1 or t.engine != "jar" else ""
                     progress(done, total, f"{t.pair.name} / {t.target.name}{tag}")
+    if split_dir is not None:
+        shutil.rmtree(split_dir, ignore_errors=True)
     return BatchResults((collected[i] for i in sorted(collected)), total=total,
                         errors=errors, cancelled=cancelled)

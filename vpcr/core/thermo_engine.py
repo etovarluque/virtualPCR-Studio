@@ -33,8 +33,9 @@ from pathlib import Path
 
 from .model import Amplicon, PairResult, PrimerHit, PrimerPair, RunConfig, SequenceResult
 from .parser import iter_fasta
-from .scoring import (CALL_BANDS, IUPAC, Reaction, call_for, delta_cq, resolve_ta,
-                      revcomp, score_site)
+from .scoring import (CALL_BANDS, IUPAC, Reaction, call_for, delta_cq, length_delay,
+                      resolve_ta, revcomp, score_site)
+from .topology import circular_for
 
 SEED_LEN = 7
 MAX_SITE_MISMATCHES = 6
@@ -120,14 +121,16 @@ def _context(top: str, start: int, L: int, orientation: str) -> str:
 
 
 def scan_sequence(header: str, seq: str, pair: PrimerPair, probes: list[_Probe],
-                  config: RunConfig, ta: float, polymerase: str) -> SequenceResult | None:
+                  config: RunConfig, ta: float, polymerase: str,
+                  reaction: Reaction | None = None) -> SequenceResult | None:
     """Sites and products of one pair on one template; None if no site at all."""
     seq = seq.upper()
     n = len(seq)
     longest = max(len(p.site) for p in probes)
+    circular = circular_for(config.circular, header, n)
     # A circle is searched with its start appended, so sites across the
     # origin are found; positions are folded back afterwards.
-    view = seq + seq[: longest - 1] if config.circular and n else seq
+    view = seq + seq[: longest - 1] if circular and n else seq
 
     hits: list[PrimerHit] = []
     for probe in probes:
@@ -159,13 +162,14 @@ def scan_sequence(header: str, seq: str, pair: PrimerPair, probes: list[_Probe],
         for r in rights:
             if r.end >= f.start:
                 size = r.end - f.start + 1
-            elif config.circular:
+            elif circular:
                 size = n - f.start + 1 + r.end          # across the origin
             else:
                 continue
             if not (config.min_len <= size <= config.max_len):
                 continue
-            delay = round(delta_cq(f.score, r.score), 2)
+            slow = round(length_delay(size, reaction), 2)
+            delay = round(delta_cq(f.score, r.score) + slow, 2)
             if delay > MAX_REPORTED_DELAY:
                 continue
             seqtext = ""
@@ -174,7 +178,7 @@ def scan_sequence(header: str, seq: str, pair: PrimerPair, probes: list[_Probe],
                            else seq[f.start - 1:] + seq[:r.end]).lower()
             res.amplicons.append(Amplicon(start=f.start, end=r.end, size=size,
                                           sequence=seqtext, delta_cq=delay,
-                                          call=call_for(delay)))
+                                          call=call_for(delay), length_delay=slow))
     res.amplicons.sort(key=lambda a: (a.start, a.end))
     res.total_amplicons = len(res.amplicons)
     res.unique_sizes = len({a.size for a in res.amplicons})
@@ -197,7 +201,8 @@ def run_thermo(pair: PrimerPair, target: Path, config: RunConfig, reaction: Reac
         if should_stop is not None and i % 200 == 0 and should_stop():
             from .runner import Cancelled
             raise Cancelled("cancelled")
-        r = scan_sequence(header, seq, pair, probes, config, ta, reaction.polymerase)
+        r = scan_sequence(header, seq, pair, probes, config, ta, reaction.polymerase,
+                          reaction)
         if r is None:
             silent.append(header)
         else:

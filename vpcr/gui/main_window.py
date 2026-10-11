@@ -81,6 +81,9 @@ TA_AUTO = 39.0
 
 # Engine choices: label shown, run_batch's key, and what each one is for.
 ENGINE_CHOICES = (
+    ("Auto (JAR if Java is available)", "auto",
+     "The virtualPCR JAR when a Java on this machine can run it,\n"
+     "otherwise the built-in engine, which needs no Java."),
     ("virtualPCR JAR", "jar",
      "The JAR's in silico PCR, with the biological score on top."),
     ("Built-in (thermodynamic)", "thermo",
@@ -89,6 +92,16 @@ ENGINE_CHOICES = (
     ("Both (compare)", "both",
      "Runs every pair through both engines and writes\n"
      "engine_comparison.csv; filter Detail on 'Engines disagree'."),
+)
+
+# Template topology: label shown, the RunConfig.circular value, and what for.
+TOPOLOGY_CHOICES = (
+    ("Auto (complete genomes circular)", "auto",
+     "Per sequence: complete genomes (\"complete genome\", or a mitogenome's\n"
+     "14-20 kb) are searched as circles, so products can cross the origin;\n"
+     "fragments and partial sequences as lines, so none are invented across it."),
+    ("Circular", "circular", "Every sequence as a circle (complete mitogenomes, plastomes)."),
+    ("Linear", "linear", "Every sequence as a line (genes, contigs, partial sequences)."),
 )
 
 # The single source of truth for the Parameters section: the widgets are built
@@ -101,8 +114,9 @@ PARAM_DEFAULTS: dict[str, object] = {
     "err3": STUDIO_DEFAULTS["n_3prime_errors"],
     "workers": STUDIO_DEFAULTS["workers"],
     "heap": "",
-    "circular": STUDIO_DEFAULTS["circular"],
+    "circular": TOPOLOGY_CHOICES[0][0],
     "engine": ENGINE_CHOICES[0][0],
+    "extension": STUDIO_DEFAULTS["extension_s"],
     "polymerase": POLYMERASES[DEFAULT_POLYMERASE].label,
     "fixed_ta": TA_AUTO,
     "probe": False,
@@ -112,7 +126,8 @@ PARAM_DEFAULTS: dict[str, object] = {
 
 _PARAM_LABELS = {
     "min_len": "Min amplicon", "max_len": "Max amplicon", "err3": "3' mismatches",
-    "workers": "Parallel jobs", "heap": "JVM heap", "circular": "Circular template",
+    "workers": "Parallel jobs", "heap": "JVM heap", "circular": "Template",
+    "extension": "Extension time",
     "probe": "Probe search", "seqext": "Extract amplicon sequences",
     "keep": "Keep raw .out reports",
     "engine": "Engine", "polymerase": "Polymerase", "fixed_ta": "Annealing Ta",
@@ -122,6 +137,8 @@ _PARAM_LABELS = {
 def _fmt_default(value: object) -> str:
     if isinstance(value, bool):
         return "on" if value else "off"
+    if isinstance(value, float) and value == STUDIO_DEFAULTS["extension_s"]:
+        return f"{value:g} s"
     if value == TA_AUTO or value == "":
         return "auto"
     return str(value)
@@ -311,6 +328,7 @@ class MainWindow(QMainWindow):
         # Newest Java found (0 = none), and the Java each JAR file needs.
         self._java_best = 0
         self._jar_need_cache: dict[tuple[str, float], int] = {}
+        self._auto_note_shown = False
         self._settings = QSettings("IAvH", APP_NAME)
         # Set before any widget exists: resizeEvent fires during construction.
         self._restoring = True
@@ -467,7 +485,9 @@ class MainWindow(QMainWindow):
         self.polymerase.currentTextChanged.connect(refresh)
         self.engine.currentTextChanged.connect(refresh)
         self.fixed_ta.valueChanged.connect(refresh)
-        for w in (self.circular, self.probe, self.seqext, self.keep):
+        self.circular.currentTextChanged.connect(refresh)
+        self.extension.valueChanged.connect(refresh)
+        for w in (self.probe, self.seqext, self.keep):
             w.toggled.connect(refresh)
         m = self.target_list.model()
         m.rowsInserted.connect(refresh)
@@ -543,11 +563,15 @@ class MainWindow(QMainWindow):
         self.sections["primers"].set_ready(bool(st.selected))
         self._refresh_primer_labels()
 
-        engine = self.engine.currentData() or "jar"
-        sub = ["circular" if self.circular.isChecked() else "linear"]
+        chosen_engine = self.engine.currentData() or "auto"
+        engine = self._engine()
+        sub = [{"auto": "auto topology", "circular": "circular",
+                "linear": "linear"}[self.circular.currentData() or "auto"]]
         if self.probe.isChecked():
             sub.append("probe")
-        if engine != "jar":
+        if chosen_engine == "auto":
+            sub.append("auto: " + ("JAR" if engine == "jar" else "built-in"))
+        elif engine != "jar":
             sub.append({"thermo": "built-in", "both": "JAR + built-in"}[engine])
         sub.append(self.polymerase.currentText().split(" (")[0])
         sub.append("auto Ta" if self.fixed_ta.value() == TA_AUTO
@@ -558,7 +582,8 @@ class MainWindow(QMainWindow):
         main = f"{self.min_len.value()}–{self.max_len.value()} bp · {self.err3.value()} mm"
         self.sections["parameters"].set_summary(main, " · ".join(sub),
                                                 f"{main}\n" + "\n".join(sub))
-        problem = self._java_problem() if engine != "thermo" else None
+        # 'auto' never fails here: without Java it is simply the built-in engine.
+        problem = self._java_problem() if chosen_engine in ("jar", "both") else None
         if problem:
             # The reason replaces the second line; the tooltip keeps the rest.
             self.sections["parameters"].set_summary(
@@ -893,7 +918,13 @@ class MainWindow(QMainWindow):
         self.err3.setToolTip("Mismatches allowed in the 3' end of each primer")
         self.workers = NoWheelSpinBox(); self.workers.setRange(1, 32)
         self.heap = NoWheelComboBox(); self.heap.addItems(["", "2g", "4g", "8g", "16g"])
-        self.circular = QCheckBox("Circular template")
+        self.circular = NoWheelComboBox()
+        for label, key, tip in TOPOLOGY_CHOICES:
+            self.circular.addItem(label, key)
+            self.circular.setItemData(self.circular.count() - 1, tip,
+                                      Qt.ItemDataRole.ToolTipRole)
+        self.circular.setToolTip("Whether a sequence is searched as a circle, so a\n"
+                                 "product can cross its origin, or as a line.")
         self.probe = QCheckBox("Probe search")
         self.seqext = QCheckBox("Extract amplicon sequences")
         self.keep = QCheckBox("Keep raw .out reports")
@@ -942,7 +973,7 @@ class MainWindow(QMainWindow):
         amp.addRow("Min amplicon (bp)", self.min_len)
         amp.addRow("Max amplicon (bp)", self.max_len)
         amp.addRow("3' mismatches", self.err3)
-        amp.addRow(self.circular)
+        amp.addRow("Template", self.circular)
         amp.addRow(self.probe)
         amp.addRow(self.seqext)
         score = QFormLayout()
@@ -960,6 +991,18 @@ class MainWindow(QMainWindow):
         self.engine.activated.connect(self._on_engine_chosen)
         score.addRow("Polymerase", self.polymerase)
         score.addRow("Annealing Ta", self.fixed_ta)
+        self.extension = NoWheelDoubleSpinBox()
+        self.extension.setRange(0.0, 600.0)
+        self.extension.setDecimals(0)
+        self.extension.setSingleStep(5.0)
+        self.extension.setSuffix(" s")
+        self.extension.setSpecialValueText("off")
+        self.extension.setToolTip(
+            "Extension time per cycle in your protocol. A product longer than the\n"
+            "polymerase copies in it (OneTaq and Taq ~1 kb/min, high-fidelity\n"
+            "~2 kb/min) is finished on only some strands each cycle, and is\n"
+            "scored down for it (column length_delay). 'off' ignores length.")
+        score.addRow("Extension", self.extension)
         # Last in the column: a two-line notice here moves no field out of
         # line with the rows of the other two columns.
         score.addRow(self.engine_status)
@@ -1284,6 +1327,14 @@ class MainWindow(QMainWindow):
             return f"JAR needs Java {need}+, found Java {self._java_best}"
         return None
 
+    def _engine(self) -> str:
+        """The engine a run would use now: 'auto' settled from the cached Java
+        probe. Run settles it again with a fresh probe (runner.resolve_engine)."""
+        chosen = self.engine.currentData() or "auto"
+        if chosen != "auto":
+            return chosen
+        return "jar" if self._java_problem() is None else "thermo"
+
     def _java_url(self) -> str:
         need = self._jar_need()
         return JAVA_DOWNLOAD.format(need=need if need and need > 0 else 25)
@@ -1313,11 +1364,14 @@ class MainWindow(QMainWindow):
     def _on_engine_chosen(self, _index: int) -> None:
         """A JAR engine just chosen: look for Java again (it may have been
         installed meanwhile) and say at once if it cannot run."""
-        if (self.engine.currentData() or "jar") == "thermo":
+        chosen = self.engine.currentData() or "auto"
+        if chosen == "thermo":
             return
         with self._busy("Looking for Java…"):
             self._refresh_java()
         self._refresh_summaries()
+        if chosen == "auto":        # falls back by itself; the tile says which
+            return
         problem = self._java_problem()
         if problem and "Java" in problem:
             self.toasts.show("warning", f"The JAR engine cannot run: {problem}. Install it, "
@@ -1412,7 +1466,8 @@ class MainWindow(QMainWindow):
         targets = self.target_list.paths()
         pairs = self.collect_pairs()
 
-        engine = self.engine.currentData() or "jar"
+        chosen = self.engine.currentData() or "auto"
+        engine, why = _runner.resolve_engine(chosen, jar or None)
         problem = self._run_problem(targets, pairs, jar, engine)
         if problem is not None and problem[0] == "jar":
             # Not in jar/: ask for it now, and carry on with the run if given.
@@ -1431,13 +1486,21 @@ class MainWindow(QMainWindow):
             self.toasts.show("warning", message, actions)
             return
         self.open_section(None)
+        if chosen == "auto" and engine == "thermo" and not self._auto_note_shown:
+            # Said once a session: the fallback is the intended behaviour.
+            self._auto_note_shown = True
+            self.toasts.show("info", "Engine auto: running the built-in engine, as the "
+                             f"JAR cannot run here ({why}).", self._java_actions()[:1]
+                             if "Java" in why else [])
 
         ta = self.fixed_ta.value()
         reaction = Reaction(self.polymerase.currentData() or DEFAULT_POLYMERASE,
-                            None if ta == TA_AUTO else ta)
+                            None if ta == TA_AUTO else ta, self.extension.value() or None)
+        topology = self.circular.currentData() or "auto"
         cfg = RunConfig(
             min_len=self.min_len.value(), max_len=self.max_len.value(),
-            n_3prime_errors=self.err3.value(), circular=self.circular.isChecked(),
+            n_3prime_errors=self.err3.value(),
+            circular="auto" if topology == "auto" else topology == "circular",
             probe=self.probe.isChecked(), sequence_extract=self.seqext.isChecked(),
         )
         # Exports describe the run that produced the results, not whatever the
@@ -1473,7 +1536,7 @@ class MainWindow(QMainWindow):
         self._log(f"JAR       : {jar}")
         self._log(f"Amplicon  : {cfg.min_len}-{cfg.max_len} bp, "
                   f"3' mismatches {cfg.n_3prime_errors}")
-        self._log(f"Template  : {'circular' if cfg.circular else 'linear'}"
+        self._log(f"Template  : {self.circular.currentText()}"
                   f"{', probe search' if cfg.probe else ''}"
                   f"{'' if cfg.sequence_extract else ', no amplicon sequences'}")
         # Cap the echo: thousands of per-item lines stall the log widget at
@@ -1483,8 +1546,13 @@ class MainWindow(QMainWindow):
                 self._log(f"Target    : {t}")
         else:
             self._log(f"Targets   : {len(targets)} files")
-        if engine != "jar":
+        if chosen == "auto":
+            self._log(f"Engine    : auto -> {'virtualPCR JAR' if engine == 'jar' else 'built-in'}"
+                      + (f" ({why})" if why else ""))
+        elif engine != "jar":
             self._log(f"Engine    : {self.engine.currentText()}")
+        if reaction.extension_s:
+            self._log(f"Extension : {reaction.extension_s:g} s per cycle")
         self._log(f"Score     : {reaction.profile.label}")
         if len(pairs) <= 50:
             for p in pairs:

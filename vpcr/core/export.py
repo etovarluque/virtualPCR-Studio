@@ -113,7 +113,8 @@ def detail_table(
                     **_hit_cols("f", f), **_hit_cols("r", r),
                 }
                 if scored:
-                    row.update({"delta_cq": amp.delta_cq, "call": amp.call or None,
+                    row.update({"delta_cq": amp.delta_cq, "length_delay": amp.length_delay,
+                                "call": amp.call or None,
                                 **_score_cols("f", f), **_score_cols("r", r)})
                 if include_sequence:
                     row["amplicon_seq"] = amp.sequence.upper()

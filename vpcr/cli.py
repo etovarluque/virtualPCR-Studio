@@ -15,8 +15,9 @@ from vpcr import JAR_DIR
 from vpcr.core.export import export_run, write_tables
 from vpcr.core.model import STUDIO_DEFAULTS, RunConfig
 from vpcr.core.primers import combine, load_pairs, primer_set_from_pairs
-from vpcr.core.runner import ENGINES, JarError, run_batch
+from vpcr.core.runner import ENGINES, JarError, resolve_engine, run_batch
 from vpcr.core.scoring import DEFAULT_POLYMERASE, POLYMERASES, Reaction, resolve_ta
+from vpcr.core.topology import TOPOLOGIES
 
 
 def _default_jar() -> Path | None:
@@ -42,11 +43,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--errors3", type=int, default=d["n_3prime_errors"],
                     help="mismatches near the 3' end")
     topo = ap.add_mutually_exclusive_group()
-    topo.add_argument("--circular", dest="circular", action="store_true",
-                      default=d["circular"],
-                      help="circular template" + (" (default)" if d["circular"] else ""))
-    topo.add_argument("--linear", dest="circular", action="store_false",
-                      help="linear template" + ("" if d["circular"] else " (default)"))
+    topo.add_argument("--topology", choices=TOPOLOGIES, default=d["circular"],
+                      help="auto (default): complete genomes as circles, fragments "
+                           "as lines, per record; or circular / linear for all")
+    topo.add_argument("--circular", dest="topology", action="store_const",
+                      const="circular", help="same as --topology circular")
+    topo.add_argument("--linear", dest="topology", action="store_const",
+                      const="linear", help="same as --topology linear")
     ap.add_argument("--probe", action="store_true")
     ap.add_argument("--no-sequence", action="store_true", help="skip amplicon sequences")
     ap.add_argument("--no-repair", action="store_true",
@@ -70,10 +73,15 @@ def main(argv: list[str] | None = None) -> int:
                          "Tm plus the polymerase's offset)")
     ap.add_argument("--no-score", action="store_true",
                     help="report the JAR's predictions only, without the biological score")
-    ap.add_argument("--engine", choices=ENGINES, default="jar",
-                    help="jar: virtualPCR (default); thermo: the built-in engine, "
-                         "no Java needed; both: run both and write "
+    ap.add_argument("--engine", choices=ENGINES, default=d["engine"],
+                    help="auto (default): the JAR when Java can run it, else the "
+                         "built-in engine; jar: virtualPCR; thermo: the built-in "
+                         "engine, no Java needed; both: run both and write "
                          "engine_comparison.csv")
+    ap.add_argument("--extension", type=float, default=d["extension_s"],
+                    help="extension time per cycle, in seconds: products longer than "
+                         "the polymerase copies in it are scored down (default: "
+                         f"{d['extension_s']:g}; 0 leaves length out of the score)")
     ap.add_argument("--java", default=None)
     ap.add_argument("--header-fields", default=None,
                     help="comma-separated names to split the FASTA header into, "
@@ -81,6 +89,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--header-sep", default="|")
     args = ap.parse_args(argv)
 
+    if args.jar is None and args.engine in ("auto", "jar", "both"):
+        args.jar = _default_jar()
+    if args.engine == "auto":
+        args.engine, why = resolve_engine("auto", args.jar, args.java)
+        print(f"engine auto: {'virtualPCR JAR' if args.engine == 'jar' else 'built-in'}"
+              + (f" ({why})" if why else ""))
     if args.no_score and args.engine != "jar":
         print("error: the built-in engine always scores; --no-score needs --engine jar",
               file=sys.stderr)
@@ -116,7 +130,8 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = RunConfig(
         min_len=args.minlen, max_len=args.maxlen, n_3prime_errors=args.errors3,
-        circular=args.circular, probe=args.probe,
+        circular=args.topology if args.topology == "auto" else args.topology == "circular",
+        probe=args.probe,
         sequence_extract=not args.no_sequence,
     )
 
@@ -126,11 +141,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.engine != "jar":
         say(f"Engine    : {args.engine}")
     say(f"Amplicon  : {cfg.min_len}-{cfg.max_len} bp, 3' mismatches {cfg.n_3prime_errors}")
-    say(f"Template  : {'circular' if cfg.circular else 'linear'}"
+    topo = {"auto": "auto (complete genomes circular)", True: "circular",
+            False: "linear"}[cfg.circular]
+    say(f"Template  : {topo}"
         f"{', probe search' if cfg.probe else ''}")
     for t in args.targets:
         say(f"Target    : {t}")
-    reaction = None if args.no_score else Reaction(args.polymerase, args.ta)
+    reaction = None if args.no_score else Reaction(args.polymerase, args.ta,
+                                                   args.extension or None)
     if reaction is not None:
         try:
             import primer3  # noqa: F401

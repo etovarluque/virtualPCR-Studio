@@ -59,6 +59,7 @@ vpcr_app/
       export.py         summary / detail tables, Excel + CSV
       scoring.py        biological score of each predicted amplicon
       thermo_engine.py  the built-in engine, independent of the JAR
+      topology.py       circular or linear, decided per record for 'auto'
     gui/
       main_window.py    the application
       primer_dialog.py  the Manage primers window, and the primer state it edits
@@ -206,17 +207,42 @@ result for the same inputs:
 
 | | |
 |---|---|
-| Min / max amplicon | 90 – 2200 bp |
+| Min / max amplicon | 40 – 2200 bp |
 | 3' mismatches | 1 |
-| Parallel jobs | 4 |
+| Template | auto (complete genomes circular, fragments linear) |
+| Engine | auto (the JAR when Java can run it, else built-in) |
+| Polymerase | OneTaq (NEB) |
+| Annealing Ta | auto (per pair) |
+| Extension | 60 s |
+| Parallel jobs | auto: cores − 2, at most 8 |
 | JVM heap | auto |
-| Circular template | on |
 | Probe search | off |
 | Extract amplicon sequences | on |
 | Keep raw .out reports | off |
 
-These suit mitochondrial barcoding rather than the JAR's own defaults
-(30–3000 bp, linear).
+These suit barcoding and eDNA markers rather than the JAR's own defaults
+(30–3000 bp, linear). Why each:
+
+* **Min 40 bp.** Short markers — trnL P6, eDNA qPCR assays, teleo — fall below
+  the 90 bp used before, and a pair whose products are all too short reads as
+  *not amplifying*, with no warning. No real product is shorter than its two
+  primers, so a low floor loses nothing.
+* **Template auto.** A circular search joins a sequence's end to its start.
+  Right for a complete mitogenome; wrong for a gene fragment from GenBank or
+  BOLD, where it can produce a product made of the last and the first bases,
+  which exists in no tube. *Auto* decides per record (`core/topology.py`):
+  *partial* or a numbered eukaryotic chromosome → linear; *complete genome /
+  sequence*, *mitogenome*, *plastome* → circular; otherwise a mitogenome's
+  length (14–20 kb) → circular, so custom headers still work; anything else →
+  linear. *Circular* and *Linear* force one topology for every record (CLI:
+  `--topology`, or `--circular` / `--linear`).
+* **Engine auto.** On a machine without a suitable Java the run goes to the
+  built-in engine instead of failing; the tile says which (`auto: JAR`,
+  `auto: built-in`), and the first fallback of a session says why in a toast.
+* **Extension 60 s.** See *Biological score*: a product too long for the
+  extension time is scored down. 60 s covers ~1.2 kb with OneTaq.
+* **Parallel jobs auto.** Every core but two, capped at 8 because each JAR job
+  is a JVM with its own heap.
 
 **The wheel does not change them.** Every spin box and the heap combo ignore
 wheel events, so scrolling the panel past one no longer edits it — a silent way
@@ -271,15 +297,17 @@ python -m vpcr
 ```
 
 CLI — same core, no window. `--jar` defaults to the one in `jar/`, and the
-parameters default to the GUI's (90–2200 bp, 1 mismatch, circular):
+parameters default to the GUI's (40–2200 bp, 1 mismatch, auto topology, auto
+engine, 60 s extension):
 
 ```
 python -m vpcr.cli --primers primers.xlsx --sheet 12-16S \
-                   --targets genomes.fasta \
-                   --out results/ --circular --minlen 90 --maxlen 2200
+                   --targets genomes.fasta --out results/
 ```
 
-Pass `--linear` for a linear template. `--sheet` takes a worksheet name or a
+`--topology auto|circular|linear` (or `--circular` / `--linear`) sets the
+template, `--engine auto|jar|thermo|both` the engine, `--extension SECONDS` the
+extension time (0 leaves length out of the score). `--sheet` takes a worksheet name or a
 0-based index (`--sheet 1` is the second sheet). If any job fails, the tables are
 still written, the failures are listed in `run_log.txt`, and the exit status is 1.
 
@@ -449,10 +477,20 @@ For each primer binding site:
   terminus are the worst, T-containing ones mild (Kwok et al. 1990;
   Stadhouders et al. 2010). Past the fifth base only binding is affected.
 
-The two sites combine into `delta_cq`, the estimated delay in cycles, and a
-`call`: **strong** (≤ 2), **probable** (≤ 5), **weak** (≤ 10), **unlikely**.
-Mismatches only matter in the first cycles; after that the primer is part of
-the template.
+* **Length.** A product longer than the polymerase copies in one cycle's
+  extension (*Extension* in Parameters, CLI `--extension`; OneTaq and Taq
+  ~1 kb/min, high-fidelity ~2 kb/min, plus ~10 s of ramp) is finished on only a
+  share *e* of the strands each cycle. Unlike a mismatch, this costs in every
+  cycle: the product grows (1 + *e*)-fold instead of 2-fold, which delays it by
+  Cq·(ln 2 / ln(1 + *e*) − 1) cycles, with Cq = 25. A product 10 % too long
+  loses ~2 cycles; twice too long, ~18 (unlikely). The share is reported as
+  `length_delay` in `detail.csv`. Like the extension weights, it is a starting
+  value for calibration.
+
+The sites and the length combine into `delta_cq`, the estimated delay in
+cycles, and a `call`: **strong** (≤ 2), **probable** (≤ 5), **weak** (≤ 10),
+**unlikely**. Mismatches only matter in the first cycles; after that the primer
+is part of the template.
 
 **Polymerase.** *OneTaq (NEB)* is the default: a Taq + Deep Vent blend whose
 3'→5' exonuclease can trim a 3' mismatch, so terminal mismatches cost it less
@@ -487,7 +525,8 @@ score into a prediction with a known error rate.
 
 | Engine | What it is |
 |---|---|
-| **virtualPCR JAR** (default) | the upstream engine, scored as above |
+| **Auto** (default) | the JAR when a Java on this machine can run it, else built-in |
+| **virtualPCR JAR** | the upstream engine, scored as above |
 | **Built-in (thermodynamic)** | an independent search in Python; needs no Java |
 | **Both (compare)** | every pair through both, side by side |
 
@@ -525,10 +564,26 @@ keep the output verbatim. `amplicon_size` is always the reported span. The new
 build emits the full sequence. When a FASTA repeats a header, the base is taken
 from the record whose sequence matches the amplicon, not from the first one.
 
-**Products crossing the origin of a circular template** are reported as
-`>16500-50`, end before start. Their size is the one the report states
-(`(120 bp)` in the new build); when the report gives none, it is computed from
-the template length.
+**New build: the circular mode is not used.** Run against templates whose
+products are known by construction (Java 25, build of 2026-07-08), the JAR's
+linear mode was exact — coordinates, sizes and sequences, on both strands and
+with sites at the very ends — but `molecular=circle`:
+
+* reports every product a second time, at its size plus the template length
+  minus one (a full turn of the circle, which no polymerase makes);
+* gives a product across the origin no coordinates and no sequence, and a size
+  one base short (137 for 138);
+* places a site starting at base 1 at the template length plus one, or misses
+  it;
+* scores a site cut by the origin at a fraction of its identity (47 % for a
+  perfect match).
+
+So the runner never sets it. Each circular record is written with its first
+bases appended — as many as the longest product needs — and searched as a
+line; afterwards, sites and products found in the appended copy are dropped as
+duplicates, ends past the origin are folded back (end < start, as in
+`>16500-50`), and anything longer than the circle is discarded. Checked against
+every case above: all correct, and in agreement with the built-in engine.
 
 **Old build: crashes on some circular templates.** `molecular=circle` throws
 `StringIndexOutOfBoundsException` in `InSilicoPCR2.FastStart` when a binding

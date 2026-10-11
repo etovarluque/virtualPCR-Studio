@@ -5,6 +5,8 @@ and biological grouping are all treated as opaque strings.
 """
 from __future__ import annotations
 
+import os
+
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -151,6 +153,10 @@ class Amplicon:
     # cycles, relative to perfectly matched primers; call is its category.
     delta_cq: float | None = None
     call: str = ""
+    # The part of delta_cq owed to the product's length alone: a product
+    # longer than the polymerase copies in the extension time is finished on
+    # only some strands each cycle (scoring.length_delay).
+    length_delay: float | None = None
 
     @property
     def wraps_origin(self) -> bool:
@@ -204,15 +210,28 @@ class PairResult:
         return sum(1 for s in self.sequences if s.amplified)
 
 
+def default_workers() -> int:
+    """Parallel jobs: every core but two, and no more than eight, since each
+    JAR job is a JVM with its own heap."""
+    return max(1, min(8, (os.cpu_count() or 4) - 2))
+
+
 # The app's own defaults, shared by the GUI and the CLI so that both routes give
-# the same result for the same inputs. Tuned for mitochondrial barcoding rather
-# than the JAR's defaults (30-3000 bp, linear), which RunConfig mirrors.
+# the same result for the same inputs. Tuned for barcoding and eDNA markers
+# rather than the JAR's defaults (30-3000 bp, linear), which RunConfig mirrors.
 STUDIO_DEFAULTS: dict[str, object] = {
-    "min_len": 90,
+    # Low enough for the shortest markers (trnL P6, eDNA qPCR assays, teleo);
+    # no real product is shorter than its two primers anyway.
+    "min_len": 40,
     "max_len": 2200,
     "n_3prime_errors": 1,
-    "circular": True,
-    "workers": 4,
+    # Per record: complete genomes as circles, fragments as lines (topology.py).
+    "circular": "auto",
+    "workers": default_workers(),
+    # JAR when Java can run it here, else the built-in engine (runner.resolve_engine).
+    "engine": "auto",
+    # Seconds of extension per cycle, for the length penalty in the score.
+    "extension_s": 60.0,
 }
 
 
@@ -223,7 +242,10 @@ class RunConfig:
     max_len: int = 3000
     n_3prime_errors: int = 1
     probe: bool = False
-    circular: bool = False
+    # True, False, or 'auto' (decided per record, see topology.py). The JAR
+    # takes one flag per run, so the runner resolves 'auto' before writing a
+    # config: to_config_text never sees it.
+    circular: bool | str = False
     ct_conversion: bool = False
     sequence_extract: bool = True
     show_primer_alignment: bool = True
@@ -234,6 +256,9 @@ class RunConfig:
 
     def to_config_text(self, targets: str, primers: str, output: str) -> str:
         b = lambda v: "true" if v else "false"  # noqa: E731
+        if not isinstance(self.circular, bool):
+            raise ValueError(f"topology {self.circular!r} must be resolved to a "
+                             "circular/linear flag before running the JAR")
         return "\n".join([
             f"targets_path={targets}",
             f"primers_path={primers}",
