@@ -71,8 +71,9 @@ VIEWS = (
 )
 
 # Where to get a Java for the JAR: Eclipse Temurin, free OpenJDK builds, and
-# one of the install folders the runner searches.
-JAVA_DOWNLOAD = "https://adoptium.net/temurin/releases/?version={need}"
+# one of the install folders the runner searches. The page itself, not one
+# version: it offers the newest, and any release from the JAR's on runs it.
+JAVA_DOWNLOAD = "https://adoptium.net/temurin/releases/"
 
 # The target list in its drawer: five rows, then it scrolls.
 TARGET_LIST_HEIGHT = 140
@@ -1473,8 +1474,7 @@ class MainWindow(QMainWindow):
                          "because it passed."))
 
     def _java_url(self) -> str:
-        need = self._jar_need()
-        return JAVA_DOWNLOAD.format(need=need if need and need > 0 else 25)
+        return JAVA_DOWNLOAD
 
     def _download_java(self) -> None:
         QDesktopServices.openUrl(QUrl(self._java_url()))
@@ -1490,7 +1490,8 @@ class MainWindow(QMainWindow):
         if "Java" in problem:
             need = self._jar_need()
             text += (f" — <a href=\"{self._java_url()}\">download Java "
-                     f"{need if need and need > 0 else ''}</a>, or use the built-in engine")
+                     f"{f'{need} or newer' if need and need > 0 else ''}</a>, "
+                     f"or use the built-in engine")
         self.engine_status.setText(text)
         self.engine_status.show()
 

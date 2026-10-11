@@ -285,7 +285,9 @@ register under `JavaSoft`, and under the usual install folders (`Java`,
 `Eclipse Adoptium`, `Microsoft`, `Zulu`, `Amazon Corretto`, `BellSoft`, `Semeru`
 in `C:\Program Files`); it picks one new enough for the JAR. Java does not have
 to be on `PATH`.
-Free builds: [Eclipse Temurin](https://adoptium.net/temurin/releases/?version=25).
+Free builds: [Eclipse Temurin](https://adoptium.net/temurin/releases/); any
+release from the JAR's on works, so the app links to the page rather than to one
+version.
 
 Without a suitable Java, a JAR engine (*virtualPCR JAR* or *Both*) is flagged
 as soon as the app opens: the *Parameters* tile turns red with the reason
