@@ -81,6 +81,11 @@ TARGET_LIST_HEIGHT = 140
 TA_AUTO = 39.0
 
 # Engine choices: label shown, run_batch's key, and what each one is for.
+# First-run window size: every field of the drawers whole, the JAR path
+# included. GEOMETRY_V goes up whenever it grows, to drop smaller saved sizes.
+DEFAULT_SIZE = QSize(1600, 900)
+GEOMETRY_V = 2
+
 ENGINE_CHOICES = (
     ("virtualPCR JAR", "jar",
      "The JAR's in silico PCR, with the biological score on top."),
@@ -665,13 +670,24 @@ class MainWindow(QMainWindow):
         if not self._restoring:
             self._save_timer.start()
 
+    def _default_geometry(self) -> None:
+        """DEFAULT_SIZE, or as much of it as the screen holds, centred."""
+        screen = (self.screen() or QApplication.primaryScreen()).availableGeometry()
+        w = min(DEFAULT_SIZE.width(), int(screen.width() * 0.95))
+        h = min(DEFAULT_SIZE.height(), int(screen.height() * 0.92))
+        self.resize(max(w, self.minimumWidth()), max(h, self.minimumHeight()))
+        self.move(screen.center() - self.rect().center())
+
     def _restore_ui_state(self) -> None:
         self._restoring = True
         try:
-            if (geom := self._settings.value("geometry")) is not None:
+            geom = self._settings.value("geometry")
+            # A size saved before DEFAULT_SIZE grew is dropped once: it cut fields.
+            if geom is not None and int(self._settings.value("ui/geometry_v", 1)) >= GEOMETRY_V:
                 self.restoreGeometry(geom)
             else:
-                self.resize(1280, 800)
+                self._default_geometry()
+                self._settings.setValue("ui/geometry_v", GEOMETRY_V)
         finally:
             self._restoring = False
 

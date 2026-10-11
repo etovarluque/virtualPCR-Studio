@@ -191,6 +191,11 @@ the app kills the process without a `closeEvent`, so a resize schedules a save
 shutdown. Minimum window size is 960 × 560: the rail, the strip and the three
 Parameters columns all fit, with nothing clipped at the right edge.
 
+The first window is 1600 × 900, or as much of it as the screen holds, centred:
+every field of the drawers shows whole, the JAR path included. A size saved by
+an earlier version, when the default was smaller, is dropped once
+(`ui/geometry_v`); a size the user sets afterwards is kept.
+
 ## Parameter defaults
 
 *Parameters* carries **Reset to defaults**, disabled while nothing has changed.
