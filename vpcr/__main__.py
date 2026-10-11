@@ -9,7 +9,6 @@ import subprocess
 import sys
 import traceback
 from datetime import datetime
-from pathlib import Path
 
 from vpcr import APP_ROOT
 
@@ -87,7 +86,9 @@ def main() -> int:
     _ensure_streams()
     sys.excepthook = _report_crash
 
-    if (missing := _missing()) and not _install_dependencies(missing):
+    # The packaged .exe carries its dependencies; there is no pip to run.
+    if not getattr(sys, "frozen", False) and (missing := _missing()) \
+            and not _install_dependencies(missing):
         return 1
 
     try:

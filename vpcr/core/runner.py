@@ -120,7 +120,9 @@ class JavaInfo:
 
 def _probe_java(exe: str) -> JavaInfo | None:
     try:
-        p = subprocess.run([exe, "-version"], capture_output=True, text=True, timeout=30)
+        # No console window: from the windowed .exe, each probe would flash one.
+        p = subprocess.run([exe, "-version"], capture_output=True, text=True, timeout=30,
+                           creationflags=_NO_WINDOW)
     except (OSError, subprocess.TimeoutExpired):
         return None
     raw = (p.stderr or p.stdout).strip()
