@@ -228,8 +228,9 @@ STUDIO_DEFAULTS: dict[str, object] = {
     # Per record: complete genomes as circles, fragments as lines (topology.py).
     "circular": "auto",
     "workers": default_workers(),
-    # JAR when Java can run it here, else the built-in engine (runner.resolve_engine).
-    "engine": "auto",
+    # The JAR, the published method, on every machine: "auto" would pick the
+    # built-in engine where Java is missing, so results would depend on the machine.
+    "engine": "jar",
     # Seconds of extension per cycle, for the length penalty in the score.
     "extension_s": 60.0,
 }

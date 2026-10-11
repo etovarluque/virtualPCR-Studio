@@ -82,9 +82,6 @@ TA_AUTO = 39.0
 
 # Engine choices: label shown, run_batch's key, and what each one is for.
 ENGINE_CHOICES = (
-    ("Auto (JAR if Java is available)", "auto",
-     "The virtualPCR JAR when a Java on this machine can run it,\n"
-     "otherwise the built-in engine, which needs no Java."),
     ("virtualPCR JAR", "jar",
      "The JAR's in silico PCR, with the biological score on top."),
     ("Built-in (thermodynamic)", "thermo",
@@ -93,6 +90,10 @@ ENGINE_CHOICES = (
     ("Both (compare)", "both",
      "Runs every pair through both engines and writes\n"
      "engine_comparison.csv; filter Detail on 'Engines disagree'."),
+    ("Auto (JAR if Java is available)", "auto",
+     "The virtualPCR JAR when a Java on this machine can run it,\n"
+     "otherwise the built-in engine, which needs no Java. Results\n"
+     "then depend on the machine: prefer a fixed engine."),
 )
 
 # Template topology: label shown, the RunConfig.circular value, and what for.

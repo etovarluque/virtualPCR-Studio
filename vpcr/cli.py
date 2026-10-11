@@ -75,8 +75,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-score", action="store_true",
                     help="report the JAR's predictions only, without the biological score")
     ap.add_argument("--engine", choices=ENGINES, default=d["engine"],
-                    help="auto (default): the JAR when Java can run it, else the "
-                         "built-in engine; jar: virtualPCR; thermo: the built-in "
+                    help="jar (default): virtualPCR; auto: the JAR when Java can "
+                         "run it, else the built-in engine; thermo: the built-in "
                          "engine, no Java needed; both: run both and write "
                          "engine_comparison.csv")
     ap.add_argument("--extension", type=float, default=d["extension_s"],

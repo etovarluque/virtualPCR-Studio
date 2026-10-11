@@ -211,7 +211,7 @@ result for the same inputs:
 | Min / max amplicon | 40 – 2200 bp |
 | 3' mismatches | 1 |
 | Template | auto (complete genomes circular, fragments linear) |
-| Engine | auto (the JAR when Java can run it, else built-in) |
+| Engine | virtualPCR JAR |
 | Polymerase | OneTaq (NEB) |
 | Annealing Ta | auto (per pair) |
 | Extension | 60 s |
@@ -237,9 +237,11 @@ These suit barcoding and eDNA markers rather than the JAR's own defaults
   length (14–20 kb) → circular, so custom headers still work; anything else →
   linear. *Circular* and *Linear* force one topology for every record (CLI:
   `--topology`, or `--circular` / `--linear`).
-* **Engine auto.** On a machine without a suitable Java the run goes to the
-  built-in engine instead of failing; the tile says which (`auto: JAR`,
-  `auto: built-in`), and the first fallback of a session says why in a toast.
+* **Engine: the JAR.** The published method, validated against products
+  known by construction, on every machine. Without a suitable Java the tile
+  turns red with a link to download it, rather than switching engines
+  silently: *Auto* (still in the list) would run the built-in engine there, so
+  the same inputs could give different results on two computers.
 * **Extension 60 s.** See *Biological score*: a product too long for the
   extension time is scored down. 60 s covers ~1.2 kb with OneTaq.
 * **Parallel jobs auto.** Every core but two, capped at 8 because each JAR job
@@ -315,7 +317,7 @@ python -m vpcr.cli --primers primers.xlsx --sheet 12-16S \
 ```
 
 `--topology auto|circular|linear` (or `--circular` / `--linear`) sets the
-template, `--engine auto|jar|thermo|both` the engine, `--extension SECONDS` the
+template, `--engine jar|thermo|both|auto` the engine, `--extension SECONDS` the
 extension time (0 leaves length out of the score). `--sheet` takes a worksheet name or a
 0-based index (`--sheet 1` is the second sheet). If any job fails, the tables are
 still written, the failures are listed in `run_log.txt`, and the exit status is 1.
@@ -562,10 +564,10 @@ score into a prediction with a known error rate.
 
 | Engine | What it is |
 |---|---|
-| **Auto** (default) | the JAR when a Java on this machine can run it, else built-in |
-| **virtualPCR JAR** | the upstream engine, scored as above |
+| **virtualPCR JAR** (default) | the upstream engine, scored as above |
 | **Built-in (thermodynamic)** | an independent search in Python; needs no Java |
 | **Both (compare)** | every pair through both, side by side |
+| **Auto** | the JAR when a Java on this machine can run it, else built-in |
 
 The built-in engine looks for sites the way a polymerase sees them, from the
 3' end: two exact 7-nt seeds (the 3'-terminal seven bases, and the seven before
