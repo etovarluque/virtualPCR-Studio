@@ -81,9 +81,9 @@ TARGET_LIST_HEIGHT = 140
 TA_AUTO = 39.0
 
 # Engine choices: label shown, run_batch's key, and what each one is for.
-# First-run window size: every field of the drawers whole, the JAR path
-# included. GEOMETRY_V goes up whenever it grows, to drop smaller saved sizes.
-DEFAULT_SIZE = QSize(1600, 900)
+# First-run window size, as tuned by hand on a 1707 x 1067 (150 %) screen.
+# GEOMETRY_V goes up whenever it changes, to drop sizes saved before.
+DEFAULT_SIZE = QSize(1082, 764)
 GEOMETRY_V = 2
 
 ENGINE_CHOICES = (
