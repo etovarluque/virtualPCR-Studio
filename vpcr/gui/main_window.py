@@ -68,6 +68,10 @@ VIEWS = (
     ("log", "Log", "Log", "What each run did, as archived in run_log.txt"),
 )
 
+# Where to get a Java for the JAR: Eclipse Temurin, free OpenJDK builds, and
+# one of the install folders the runner searches.
+JAVA_DOWNLOAD = "https://adoptium.net/temurin/releases/?version={need}"
+
 # The target list in its drawer: five rows, then it scrolls.
 TARGET_LIST_HEIGHT = 140
 
@@ -304,6 +308,9 @@ class MainWindow(QMainWindow):
         # The primer tables live in a dialog that is rebuilt on every open, so
         # the window, not a widget, owns what was loaded.
         self.primers = PrimerState()
+        # Newest Java found (0 = none), and the Java each JAR file needs.
+        self._java_best = 0
+        self._jar_need_cache: dict[tuple[str, float], int] = {}
         self._settings = QSettings("IAvH", APP_NAME)
         # Set before any widget exists: resizeEvent fires during construction.
         self._restoring = True
@@ -551,9 +558,15 @@ class MainWindow(QMainWindow):
         main = f"{self.min_len.value()}–{self.max_len.value()} bp · {self.err3.value()} mm"
         self.sections["parameters"].set_summary(main, " · ".join(sub),
                                                 f"{main}\n" + "\n".join(sub))
-        jar = self.jar_edit.text().strip()
-        self.sections["parameters"].set_ready(
-            engine == "thermo" or bool(jar and Path(jar).exists()))
+        problem = self._java_problem() if engine != "thermo" else None
+        if problem:
+            # The reason replaces the second line; the tooltip keeps the rest.
+            self.sections["parameters"].set_summary(
+                main, problem, f"{main}\n" + "\n".join(sub) + f"\n\n⚠ {problem}")
+            self.sections["parameters"].set_problem(problem)
+        else:
+            self.sections["parameters"].set_ready(True)
+        self._show_engine_status(problem)
         self.reset_btn.setEnabled(not at_default)
 
         label = self.run_label.text().strip()
@@ -934,8 +947,22 @@ class MainWindow(QMainWindow):
         amp.addRow(self.seqext)
         score = QFormLayout()
         score.addRow("Engine", self.engine)
+        # Why the chosen engine cannot run here, with the Java download link.
+        self.engine_status = QLabel("")
+        self.engine_status.setObjectName("outputStatus")
+        self.engine_status.setProperty("ok", "false")
+        self.engine_status.setWordWrap(True)
+        self.engine_status.setTextFormat(Qt.TextFormat.RichText)
+        self.engine_status.setOpenExternalLinks(True)
+        self.engine_status.hide()
+        # activated, not currentIndexChanged: only a choice made by the user
+        # gets a toast, not the value set at start or by Reset.
+        self.engine.activated.connect(self._on_engine_chosen)
         score.addRow("Polymerase", self.polymerase)
         score.addRow("Annealing Ta", self.fixed_ta)
+        # Last in the column: a two-line notice here moves no field out of
+        # line with the rows of the other two columns.
+        score.addRow(self.engine_status)
         run = QFormLayout()
         run.addRow("virtualPCR JAR", jar_row)
         run.addRow("Parallel jobs", self.workers)
@@ -1218,11 +1245,84 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self._log(f"WARNING: cannot read {jar.name}: {e}")
             return
-        best = max((j.feature for j in discover_javas()), default=0)
+        best = self._refresh_java()
         if best < need:
             self._log(f"WARNING: {jar.name} needs Java {need}+, "
                       + (f"newest found is Java {best}." if best else "and no Java was found.")
                       + " The built-in engine needs no Java.")
+
+    # -- Java for the JAR engine ---------------------------------------------
+
+    def _refresh_java(self) -> int:
+        """Look for installed Javas again; the newest feature release, 0 if none."""
+        self._java_best = max((j.feature for j in _runner.discover_javas()), default=0)
+        return self._java_best
+
+    def _jar_need(self) -> int | None:
+        """The Java the selected JAR needs; None without a JAR, -1 if unreadable."""
+        jar = self.jar_edit.text().strip()
+        if not jar or not Path(jar).is_file():
+            return None
+        key = (jar, Path(jar).stat().st_mtime)
+        if key not in self._jar_need_cache:
+            try:
+                self._jar_need_cache[key] = jar_class_version(jar)
+            except Exception:
+                self._jar_need_cache[key] = -1
+        return self._jar_need_cache[key]
+
+    def _java_problem(self) -> str | None:
+        """Why the JAR engine cannot run on this machine, or None."""
+        need = self._jar_need()
+        if need is None:
+            return "virtualPCR.jar not found"
+        if need < 0:
+            return "virtualPCR.jar cannot be read"
+        if self._java_best == 0:
+            return f"JAR needs Java {need}+, none installed"
+        if self._java_best < need:
+            return f"JAR needs Java {need}+, found Java {self._java_best}"
+        return None
+
+    def _java_url(self) -> str:
+        need = self._jar_need()
+        return JAVA_DOWNLOAD.format(need=need if need and need > 0 else 25)
+
+    def _download_java(self) -> None:
+        QDesktopServices.openUrl(QUrl(self._java_url()))
+
+    def _use_builtin_engine(self) -> None:
+        self.engine.setCurrentIndex(self.engine.findData("thermo"))
+
+    def _show_engine_status(self, problem: str | None) -> None:
+        if not problem:
+            self.engine_status.hide()
+            return
+        text = f"Engine: {problem}"
+        if "Java" in problem:
+            need = self._jar_need()
+            text += (f" — <a href=\"{self._java_url()}\">download Java "
+                     f"{need if need and need > 0 else ''}</a>, or use the built-in engine")
+        self.engine_status.setText(text)
+        self.engine_status.show()
+
+    def _java_actions(self) -> list:
+        return [("Download Java", self._download_java),
+                ("Use built-in engine", self._use_builtin_engine)]
+
+    def _on_engine_chosen(self, _index: int) -> None:
+        """A JAR engine just chosen: look for Java again (it may have been
+        installed meanwhile) and say at once if it cannot run."""
+        if (self.engine.currentData() or "jar") == "thermo":
+            return
+        with self._busy("Looking for Java…"):
+            self._refresh_java()
+        self._refresh_summaries()
+        problem = self._java_problem()
+        if problem and "Java" in problem:
+            self.toasts.show("warning", f"The JAR engine cannot run: {problem}. Install it, "
+                             f"or use the built-in engine, which needs no Java.",
+                             self._java_actions())
 
     def pick_jar(self, prompt: str = "Select virtualPCR.jar") -> bool:
         """Ask for the JAR; remembered for the next session. True if one was chosen."""
@@ -1322,10 +1422,12 @@ class MainWindow(QMainWindow):
             problem = ("parameters", problem[1])
         if problem is not None:
             section, message = problem
-            # The form that fixes it opens, and a toast says what to fix.
-            self.open_section(section)
             actions = [("View/Select primers", self.manage_primers)] if section == "primers" \
                 and self.primers.pairs else []
+            if section == "java":
+                section, actions = "parameters", self._java_actions()
+            # The form that fixes it opens, and a toast says what to fix.
+            self.open_section(section)
             self.toasts.show("warning", message, actions)
             return
         self.open_section(None)
@@ -1452,7 +1554,9 @@ class MainWindow(QMainWindow):
             try:
                 _runner.select_java(jar)
             except JarError as e:
-                return "parameters", f"{e} Or choose the built-in engine, which needs no Java."
+                self._refresh_java()
+                self._refresh_summaries()
+                return "java", f"{e} Or choose the built-in engine, which needs no Java."
             except Exception as e:      # an unreadable JAR
                 return "parameters", f"{Path(jar).name} cannot be used: {e}"
 

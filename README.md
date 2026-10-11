@@ -245,6 +245,15 @@ On that machine, install Python 3.10+ and a JRE, then double-click
 searches for JREs on `PATH`, under `C:\Program Files\Java` and
 `C:\Program Files\Eclipse Adoptium`, and picks one new enough for the JAR. Java
 does not have to be on `PATH`: a JDK in one of those folders is found anyway.
+Free builds: [Eclipse Temurin](https://adoptium.net/temurin/releases/?version=25).
+
+Without a suitable Java, a JAR engine (*virtualPCR JAR* or *Both*) is flagged
+as soon as the app opens: the *Parameters* tile turns red with the reason
+("JAR needs Java 25+, none installed"), and the form says it again under
+*Annealing Ta* with a link to download that Java. Choosing a JAR engine looks
+for Java afresh — it may have been installed with the app open — and, if it
+still cannot run, raises a toast with **Download Java** and **Use built-in
+engine**; *Run* does the same. The built-in engine needs no Java.
 
 The JAR always lives in `jar/virtualPCR.jar`, and the app takes it from there
 at start, whether or not a Java to run it is installed — a missing or too old
