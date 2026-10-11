@@ -12,9 +12,12 @@ setting through Qt's style hints (Qt 6.5+), and keeps following it live.
 from __future__ import annotations
 
 import math
+import tempfile
+from pathlib import Path
 
 from PyQt6.QtCore import QObject, QPointF, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QGuiApplication, QIcon, QPainter, QPalette, QPen, QPixmap
+from PyQt6.QtGui import (QColor, QGuiApplication, QIcon, QPainter, QPainterPath,
+                         QPalette, QPen, QPixmap)
 from PyQt6.QtWidgets import QApplication, QStyleFactory
 
 MODES = ("system", "light", "dark")
@@ -127,6 +130,57 @@ def toggle_icon(show_sun: bool) -> QIcon:
     return QIcon(px)
 
 
+def _assets(t: dict[str, str], scheme_name: str) -> dict[str, str]:
+    """Arrow and check-mark images for the style sheet, in this theme's colours.
+
+    QSS can only take images from files, and styling a combo box, spin box or
+    check box in QSS drops the native arrows and ticks, so they are drawn here
+    once per theme into a temp folder. Returned as forward-slash paths.
+    """
+    folder = Path(tempfile.gettempdir()) / "vpcr_theme"
+    folder.mkdir(exist_ok=True)
+
+    def draw(name: str, size: int, painter_fn) -> str:
+        path = folder / f"{name}_{scheme_name}.png"
+        px = QPixmap(size, size)
+        px.fill(Qt.GlobalColor.transparent)
+        p = QPainter(px)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter_fn(p, size)
+        p.end()
+        px.save(str(path))
+        return path.as_posix()
+
+    def chevron(color: str, up: bool):
+        def fn(p: QPainter, n: int) -> None:
+            p.setPen(QPen(QColor(color), n * 0.11, Qt.PenStyle.SolidLine,
+                          Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+            a, b, c = (n * 0.25, n * 0.62), (n * 0.5, n * 0.38), (n * 0.75, n * 0.62)
+            if not up:
+                a, b, c = (a[0], n - a[1]), (b[0], n - b[1]), (c[0], n - c[1])
+            path = QPainterPath(QPointF(*a))
+            path.lineTo(QPointF(*b))
+            path.lineTo(QPointF(*c))
+            p.drawPath(path)
+        return fn
+
+    def check(p: QPainter, n: int) -> None:
+        p.setPen(QPen(QColor(t["accent_ink"]), n * 0.13, Qt.PenStyle.SolidLine,
+                      Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        path = QPainterPath(QPointF(n * 0.22, n * 0.52))
+        path.lineTo(QPointF(n * 0.42, n * 0.72))
+        path.lineTo(QPointF(n * 0.78, n * 0.30))
+        p.drawPath(path)
+
+    return {
+        "down": draw("down", 32, chevron(t["muted"], up=False)),
+        "up": draw("up", 32, chevron(t["muted"], up=True)),
+        "down_dis": draw("down_dis", 32, chevron(t["line"], up=False)),
+        "up_dis": draw("up_dis", 32, chevron(t["line"], up=True)),
+        "check": draw("check", 32, check),
+    }
+
+
 def _system_scheme() -> str:
     hints = QGuiApplication.styleHints()
     try:
@@ -160,9 +214,11 @@ def _palette(t: dict[str, str]) -> QPalette:
     return p
 
 
-def stylesheet(t: dict[str, str]) -> str:
-    """Application-wide QSS. Spin boxes and combo boxes are left to Fusion:
-    styling their frames in QSS makes Qt drop their native arrows."""
+def stylesheet(t: dict[str, str], a: dict[str, str] | None = None) -> str:
+    """Application-wide QSS. `a` holds the drawn arrows and tick (see _assets):
+    combo boxes, spin boxes and check boxes are styled in full, so they need
+    their own images in place of the native ones QSS switches off."""
+    a = a or {}
     return f"""
     QMainWindow, QDialog {{ background: {t['bg']}; }}
     QToolTip {{ background: {t['card']}; color: {t['ink']}; border: 1px solid {t['line']};
@@ -198,6 +254,60 @@ def stylesheet(t: dict[str, str]) -> str:
                   border: 1px solid {t['line']}; border-radius: 6px; padding: 3px 6px;
                   selection-background-color: {t['accent']}; selection-color: {t['accent_ink']}; }}
     QLineEdit:focus, QPlainTextEdit:focus {{ border-color: {t['accent']}; }}
+
+    /* One height and one frame for every single-line input. */
+    QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{ min-height: 22px; max-height: 22px; }}
+    QComboBox, QSpinBox, QDoubleSpinBox {{ background: {t['card']}; color: {t['ink']};
+                  border: 1px solid {t['line']}; border-radius: 6px; padding: 3px 8px;
+                  selection-background-color: {t['accent']}; selection-color: {t['accent_ink']}; }}
+    QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover {{ border-color: {t['muted']}; }}
+    QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus,
+    QComboBox:on {{ border-color: {t['accent']}; }}
+    QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled,
+    QLineEdit:disabled {{ color: {t['muted']}; background: {t['bg']}; }}
+    QComboBox {{ padding-right: 26px; }}
+    QComboBox::drop-down {{ subcontrol-origin: padding; subcontrol-position: center right;
+                  width: 24px; border: none; }}
+    QComboBox::down-arrow {{ image: url({a.get('down', '')}); width: 12px; height: 12px; }}
+    QComboBox::down-arrow:disabled {{ image: url({a.get('down_dis', '')}); }}
+    QComboBox QAbstractItemView {{ background: {t['card']}; color: {t['ink']};
+                  border: 1px solid {t['line']}; padding: 4px; outline: 0;
+                  selection-background-color: {t['accent_soft']}; selection-color: {t['ink']}; }}
+    QSpinBox, QDoubleSpinBox {{ padding-right: 24px; }}
+    QSpinBox::up-button, QDoubleSpinBox::up-button {{ subcontrol-origin: border;
+                  subcontrol-position: top right; width: 22px; border: none;
+                  background: transparent; margin-top: 2px; }}
+    QSpinBox::down-button, QDoubleSpinBox::down-button {{ subcontrol-origin: border;
+                  subcontrol-position: bottom right; width: 22px; border: none;
+                  background: transparent; margin-bottom: 2px; }}
+    QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+    QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
+                  background: {t['chip']}; border-radius: 4px; }}
+    QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{ image: url({a.get('up', '')});
+                  width: 11px; height: 11px; }}
+    QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{ image: url({a.get('down', '')});
+                  width: 11px; height: 11px; }}
+    QSpinBox::up-arrow:disabled, QDoubleSpinBox::up-arrow:disabled,
+    QSpinBox::up-arrow:off, QDoubleSpinBox::up-arrow:off {{ image: url({a.get('up_dis', '')}); }}
+    QSpinBox::down-arrow:disabled, QDoubleSpinBox::down-arrow:disabled,
+    QSpinBox::down-arrow:off, QDoubleSpinBox::down-arrow:off {{
+                  image: url({a.get('down_dis', '')}); }}
+
+    /* Check boxes: a visible frame at rest, a filled accent box when ticked. */
+    QCheckBox {{ spacing: 8px; color: {t['ink']}; }}
+    QCheckBox::indicator {{ width: 16px; height: 16px; border-radius: 4px;
+                  border: 2px solid {t['muted']}; background: {t['card']}; }}
+    QCheckBox::indicator:hover {{ border-color: {t['accent']}; }}
+    QCheckBox::indicator:checked {{ background: {t['accent']}; border-color: {t['accent']};
+                  image: url({a.get('check', '')}); }}
+    QCheckBox::indicator:disabled {{ border-color: {t['line']}; background: {t['bg']}; }}
+    QCheckBox::indicator:checked:disabled {{ background: {t['line']}; }}
+    QCheckBox:disabled {{ color: {t['muted']}; }}
+    /* The same box for check marks inside tables (View/Select primers). */
+    QTableView::indicator, QListView::indicator {{ width: 14px; height: 14px;
+                  border-radius: 4px; border: 2px solid {t['muted']}; background: {t['card']}; }}
+    QTableView::indicator:checked, QListView::indicator:checked {{ background: {t['accent']};
+                  border-color: {t['accent']}; image: url({a.get('check', '')}); }}
     QListWidget {{ padding: 2px; }}
 
     QFrame#strip {{ background: {t['panel']}; border-bottom: 1px solid {t['line']}; }}
@@ -258,7 +368,7 @@ def apply(app: QApplication, new_mode: str | None = None) -> str:
     if app.style().name().lower() != "fusion":
         app.setStyle(QStyleFactory.create("Fusion"))
     app.setPalette(_palette(t))
-    app.setStyleSheet(stylesheet(t))
+    app.setStyleSheet(stylesheet(t, _assets(t, _scheme)))
     bus().changed.emit(_scheme)
     return _scheme
 
