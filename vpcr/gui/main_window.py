@@ -53,6 +53,7 @@ from vpcr.core.export import (EXCEL_ROW_LIMIT, OutputCheck, check_output_dir,
                               summary_table, unique_dir, write_tables)
 from vpcr.core.model import STUDIO_DEFAULTS, PrimerPair, RunConfig
 from vpcr.core.primers import MIN_PRIMER_LEN
+from vpcr.core import jar_check
 from vpcr.core import runner as _runner
 from vpcr.core.runner import (JarError, discover_javas, jar_class_version,
                               run_batch, select_java)
@@ -281,6 +282,8 @@ class RunWorker(QThread):
     progress = pyqtSignal(int, int, str)
     finished_ok = pyqtSignal(object)
     failed = pyqtSignal(str)
+    # A build tested for the first time on this machine: its description.
+    jar_verified = pyqtSignal(str)
 
     def __init__(self, pairs, targets, jar, config, workers, heap, reports_dir,
                  reaction=None, engine="jar"):
@@ -296,6 +299,17 @@ class RunWorker(QThread):
         (pairs, targets, jar, config, workers, heap, reports_dir,
          reaction, engine) = self._args
         try:
+            # A build not yet verified here runs the self-test first (once).
+            if engine in ("jar", "both"):
+                self.progress.emit(0, 0, "Checking the virtualPCR.jar build…")
+                result, ran = jar_check.verify(jar)
+                if not result.ok:
+                    raise JarError(
+                        f"this virtualPCR.jar ({jar_check.describe(jar_check.jar_sha256(jar))}) "
+                        f"failed the app's self-test, so its results cannot be trusted: "
+                        f"{result.summary()}")
+                if ran:
+                    self.jar_verified.emit(jar_check.describe(jar_check.jar_sha256(jar)))
             results = run_batch(
                 pairs, targets, jar, config,
                 workers=workers, heap=heap or None, reports_dir=reports_dir,
@@ -329,6 +343,7 @@ class MainWindow(QMainWindow):
         self._java_best = 0
         self._jar_need_cache: dict[tuple[str, float], int] = {}
         self._auto_note_shown = False
+        self._jar_sha: dict = {}
         self._settings = QSettings("IAvH", APP_NAME)
         # Set before any widget exists: resizeEvent fires during construction.
         self._restoring = True
@@ -759,6 +774,10 @@ class MainWindow(QMainWindow):
         h = self.menuBar().addMenu("&Help")
         a = QAction("Java / JAR info", self)
         a.triggered.connect(self.show_env)
+        h.addAction(a)
+        a = QAction("Verify virtualPCR.jar", self)
+        a.setToolTip("Run the self-test: templates with known products, compared base for base")
+        a.triggered.connect(self.verify_jar)
         h.addAction(a)
 
         # The theme toggle itself sits at the foot of the rail.
@@ -1321,6 +1340,9 @@ class MainWindow(QMainWindow):
             return "virtualPCR.jar not found"
         if need < 0:
             return "virtualPCR.jar cannot be read"
+        verdict = self._jar_verdict()
+        if verdict is not None and not verdict["ok"]:
+            return "this JAR build failed its self-test"
         if self._java_best == 0:
             return f"JAR needs Java {need}+, none installed"
         if self._java_best < need:
@@ -1334,6 +1356,49 @@ class MainWindow(QMainWindow):
         if chosen != "auto":
             return chosen
         return "jar" if self._java_problem() is None else "thermo"
+
+    def _jar_verdict(self) -> dict | None:
+        """The stored self-test verdict for the selected JAR, by its SHA-256."""
+        jar = self.jar_edit.text().strip()
+        if not jar or not Path(jar).is_file():
+            return None
+        key = (jar, Path(jar).stat().st_mtime)
+        if self._jar_sha.get("key") != key:
+            try:
+                self._jar_sha = {"key": key, "sha": jar_check.jar_sha256(jar)}
+            except OSError:
+                return None
+        return jar_check.cached(self._jar_sha["sha"])
+
+    def verify_jar(self) -> None:
+        """Help → Verify virtualPCR.jar: run the self-test now, whatever is stored."""
+        jar = self.jar_edit.text().strip()
+        if not jar or not Path(jar).is_file():
+            self.toasts.show("warning", "No virtualPCR.jar selected.")
+            return
+        with self._busy("Running the virtualPCR.jar self-test…"):
+            result, _ = jar_check.verify(jar, force=True)
+        label = jar_check.describe(jar_check.jar_sha256(jar))
+        self._log(f"JAR self-test ({label}): {result.summary()}")
+        for f in result.failures:
+            self._log(f"  {f}")
+        self._refresh_summaries()
+        if result.ok:
+            self.toasts.show("success", f"{label}: self-test passed — every known product "
+                             f"found exactly ({result.seconds:.1f} s).")
+        else:
+            self.toasts.show("error", f"{label} failed the self-test: {result.summary()}",
+                             [("Show log", lambda: self.show_view("log")),
+                              ("Use built-in engine", self._use_builtin_engine)])
+
+    def _on_jar_verified(self, label: str) -> None:
+        self._log(f"JAR self-test passed: {label} (first use on this machine)")
+        known = not label.startswith("unrecognised")
+        self.toasts.show("success" if known else "info",
+                         f"{label} verified on this machine: every product of the "
+                         f"self-test was found exactly." + ("" if known else
+                         " This build is new to the app; its results are trusted "
+                         "because it passed."))
 
     def _java_url(self) -> str:
         need = self._jar_need()
@@ -1449,8 +1514,14 @@ class MainWindow(QMainWindow):
         jar = self.jar_edit.text().strip()
         if jar and Path(jar).exists():
             try:
+                sha = jar_check.jar_sha256(jar)
+                verdict = jar_check.cached(sha)
+                lines.append(f"\nJAR: {jar}\nBuild: {jar_check.describe(sha)}\nSHA-256: {sha}")
+                lines.append("Self-test: " + ("not run yet on this machine" if verdict is None
+                             else f"passed ({verdict['date']})" if verdict["ok"]
+                             else f"FAILED ({verdict['date']}): " + "; ".join(verdict["failures"][:3])))
                 need = jar_class_version(jar)
-                lines.append(f"\nJAR: {jar}\nRequires Java {need}+")
+                lines.append(f"Requires Java {need}+")
                 chosen = select_java(jar)
                 lines.append(f"Will run with: Java {chosen.feature} ({chosen.executable})")
             except JarError as e:
@@ -1572,6 +1643,7 @@ class MainWindow(QMainWindow):
         self.worker.progress.connect(self.on_progress)
         self.worker.finished_ok.connect(self.on_finished)
         self.worker.failed.connect(self.on_failed)
+        self.worker.jar_verified.connect(self._on_jar_verified)
         self.worker.start()
 
     def _run_problem(self, targets: list[str], pairs: list[PrimerPair], jar: str,

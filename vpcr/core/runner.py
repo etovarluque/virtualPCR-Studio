@@ -234,6 +234,10 @@ def resolve_engine(engine: str, jar: str | Path | None,
         return engine, ""
     if jar is None or not Path(jar).is_file():
         return "thermo", "no virtualPCR.jar"
+    from .jar_check import cached, jar_sha256
+    verdict = cached(jar_sha256(jar))
+    if verdict is not None and not verdict["ok"]:
+        return "thermo", "this virtualPCR.jar build failed its self-test"
     try:
         select_java(jar, java_path)
     except JarError as e:

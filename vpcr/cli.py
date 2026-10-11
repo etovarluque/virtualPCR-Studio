@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from vpcr import JAR_DIR
+from vpcr.core import jar_check
 from vpcr.core.export import export_run, write_tables
 from vpcr.core.model import STUDIO_DEFAULTS, RunConfig
 from vpcr.core.primers import combine, load_pairs, primer_set_from_pairs
@@ -83,6 +84,8 @@ def main(argv: list[str] | None = None) -> int:
                          "the polymerase copies in it are scored down (default: "
                          f"{d['extension_s']:g}; 0 leaves length out of the score)")
     ap.add_argument("--java", default=None)
+    ap.add_argument("--skip-jar-check", action="store_true",
+                    help="do not run the self-test on a JAR build not yet verified here")
     ap.add_argument("--header-fields", default=None,
                     help="comma-separated names to split the FASTA header into, "
                          "e.g. 'accession,species,moltype,topology,length,group'")
@@ -169,6 +172,16 @@ def main(argv: list[str] | None = None) -> int:
 
     def progress(done: int, n: int, label: str) -> None:
         say(f"  [{done}/{n}] {label}")
+
+    if args.engine in ("jar", "both") and not args.skip_jar_check:
+        result, ran = jar_check.verify(args.jar, args.java)
+        label = jar_check.describe(jar_check.jar_sha256(args.jar))
+        if not result.ok:
+            print(f"error: {label} failed the self-test, so its results cannot be "
+                  f"trusted: {result.summary()}\n(--engine thermo runs without it; "
+                  f"--skip-jar-check overrides)", file=sys.stderr)
+            return 1
+        say(f"JAR build : {label}" + (" — self-test passed now" if ran else " — verified"))
 
     say(f"\nrunning {total} job(s)...")
     try:

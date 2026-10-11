@@ -60,6 +60,7 @@ vpcr_app/
       scoring.py        biological score of each predicted amplicon
       thermo_engine.py  the built-in engine, independent of the JAR
       topology.py       circular or linear, decided per record for 'auto'
+      jar_check.py      the JAR build's fingerprint and self-test
     gui/
       main_window.py    the application
       primer_dialog.py  the Manage primers window, and the primer state it edits
@@ -456,6 +457,34 @@ within a study.** Ask the author for the engine source — GPLv3 entitles you to
 
 Prefer the new build: it fixes the two bugs below and does not crash on
 circular templates. `Help → Java / JAR info` shows what is installed.
+
+## Verifying the JAR build
+
+The JAR states no version — its manifest names only the Java that compiled it —
+and a different build can change the report format or the search without any
+error, leaving the tables wrong in silence. So the app identifies a build by its
+**SHA-256** and judges it by what it does (`core/jar_check.py`):
+
+* **Known builds.** The build the app was written and checked against (2026-07-08,
+  Java 25, `44a010c0…`) is listed by name; any other is *unrecognised*.
+* **Self-test.** Before a build is first used on a machine, it is run on
+  templates whose products are known by construction — products on either
+  strand, two in one record, sites at the very ends of a sequence, a record with
+  none, three cases across the origin of a circle (a site cut by it, one at
+  base 1), a circle shorter than the longest product, and a degenerate primer —
+  and every product is compared with the truth: coordinates, size and sequence.
+  It takes well under a second.
+* **Once per build.** The verdict is kept per machine, in
+  `%LOCALAPPDATA%\vpcr\verified_jars.json`, keyed by the SHA-256.
+
+A build that **passes** is used, known or not: a toast says it was verified on
+this machine. One that **fails** cannot be used by a JAR engine: the
+*Parameters* tile turns red, a run stops with the failures listed
+("lin_fwd: product 151-318 (167 bp), expected 151-318 (168 bp)"), and the
+*Auto* engine falls back to the built-in one. *Help → Verify virtualPCR.jar*
+runs the test again on demand; *Help → Java / JAR info* shows the build, its
+SHA-256 and its verdict. The CLI does the same before a JAR run and exits 1 on
+a failed build; `--skip-jar-check` overrides it.
 
 ## Biological score
 
