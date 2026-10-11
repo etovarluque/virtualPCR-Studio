@@ -246,8 +246,12 @@ searches for JREs on `PATH`, under `C:\Program Files\Java` and
 `C:\Program Files\Eclipse Adoptium`, and picks one new enough for the JAR. Java
 does not have to be on `PATH`: a JDK in one of those folders is found anyway.
 
-The JAR is looked for in `jar/`, next to the app, and one level up, so other
-layouts work too as long as you point at it with *Browse* or `--jar`.
+The JAR always lives in `jar/virtualPCR.jar`, and the app takes it from there
+at start, whether or not a Java to run it is installed — a missing or too old
+Java is reported as such at *Run*. Only when `jar/` holds no JAR does the app
+ask for one: at *Run*, with a file dialog, carrying on with the run once it is
+chosen. The choice is remembered for the next session; *Browse* under
+*Parameters → Run* changes it at any time, and `--jar` on the CLI.
 
 ## Usage
 

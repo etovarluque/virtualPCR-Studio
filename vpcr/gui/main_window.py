@@ -53,6 +53,7 @@ from vpcr.core.export import (EXCEL_ROW_LIMIT, OutputCheck, check_output_dir,
                               summary_table, unique_dir, write_tables)
 from vpcr.core.model import STUDIO_DEFAULTS, PrimerPair, RunConfig
 from vpcr.core.primers import MIN_PRIMER_LEN
+from vpcr.core import runner as _runner
 from vpcr.core.runner import (JarError, discover_javas, jar_class_version,
                               run_batch, select_java)
 from vpcr.core.scoring import (DEFAULT_POLYMERASE, POLYMERASES, Reaction,
@@ -1194,44 +1195,43 @@ class MainWindow(QMainWindow):
             if self.statusBar().currentMessage() == message:
                 self.statusBar().showMessage(before)
 
+    # Where the JAR always lives; anywhere else only when the user says so.
+    DEFAULT_JAR = JAR_DIR / "virtualPCR.jar"
+
     def _autodetect_jar(self) -> None:
-        """Pick the newest JAR that some installed JRE can actually run."""
-        best_feature = max((j.feature for j in discover_javas()), default=0)
-        candidates: list[tuple[int, Path]] = []
-        for cand in self._jar_candidates():
-            try:
-                need = jar_class_version(cand)
-            except Exception:
-                continue
-            if need <= best_feature:
-                candidates.append((need, cand))
-            else:
-                self._log(f"Ignoring {cand.name} in {cand.parent.name}/ "
-                          f"(needs Java {need}, newest found is {best_feature})")
-        if not candidates:
-            self._log("No runnable virtualPCR.jar found; select one manually.")
+        """jar/virtualPCR.jar, else the JAR chosen last time, else nothing yet.
+
+        The JAR is taken whether or not a Java to run it is installed: that
+        is a separate problem, reported as such at Run, rather than an empty
+        JAR field that reads as "the JAR is missing".
+        """
+        saved = str(self._settings.value("jar/path", "") or "")
+        jar = self.DEFAULT_JAR if self.DEFAULT_JAR.is_file() else \
+            Path(saved) if saved and Path(saved).is_file() else None
+        if jar is None:
+            self._log(f"No virtualPCR.jar in {JAR_DIR}; you will be asked for it at Run.")
             return
-        need, jar = max(candidates)
         self.jar_edit.setText(str(jar))
-        self._log(f"Found JAR: {jar} (Java {need}+)")
+        self._log(f"JAR: {jar}")
+        try:
+            need = jar_class_version(jar)
+        except Exception as e:
+            self._log(f"WARNING: cannot read {jar.name}: {e}")
+            return
+        best = max((j.feature for j in discover_javas()), default=0)
+        if best < need:
+            self._log(f"WARNING: {jar.name} needs Java {need}+, "
+                      + (f"newest found is Java {best}." if best else "and no Java was found.")
+                      + " The built-in engine needs no Java.")
 
-    @staticmethod
-    def _jar_candidates() -> list[Path]:
-        """Look in jar/, beside the app, and one level up; never a drive walk."""
-        seen: dict[Path, None] = {}
-        for base in (JAR_DIR, APP_ROOT, APP_ROOT.parent):
-            if not base.is_dir():
-                continue
-            for pattern in ("virtualPCR.jar", "*/virtualPCR.jar", "*/*/virtualPCR.jar"):
-                for p in base.glob(pattern):
-                    seen.setdefault(p.resolve(), None)
-        return list(seen)
-
-    def pick_jar(self) -> None:
-        p, _ = QFileDialog.getOpenFileName(self, "Select virtualPCR.jar", "",
-                                           "JAR files (*.jar)")
-        if p:
-            self.jar_edit.setText(p)
+    def pick_jar(self, prompt: str = "Select virtualPCR.jar") -> bool:
+        """Ask for the JAR; remembered for the next session. True if one was chosen."""
+        p, _ = QFileDialog.getOpenFileName(self, prompt, str(JAR_DIR), "JAR files (*.jar)")
+        if not p:
+            return False
+        self.jar_edit.setText(p)
+        self._settings.setValue("jar/path", p)
+        return True
 
     def add_targets(self) -> None:
         files, _ = QFileDialog.getOpenFileNames(
@@ -1314,6 +1314,12 @@ class MainWindow(QMainWindow):
 
         engine = self.engine.currentData() or "jar"
         problem = self._run_problem(targets, pairs, jar, engine)
+        if problem is not None and problem[0] == "jar":
+            # Not in jar/: ask for it now, and carry on with the run if given.
+            if self.pick_jar(f"virtualPCR.jar is not in {JAR_DIR.name}/ — select it"):
+                self.start_run()
+                return
+            problem = ("parameters", problem[1])
         if problem is not None:
             section, message = problem
             # The form that fixes it opens, and a toast says what to fix.
@@ -1439,9 +1445,16 @@ class MainWindow(QMainWindow):
         if too_long:
             return "parameters", (f"Max amplicon ({hi} bp) is shorter than the primers of "
                                   f"{', '.join(too_long[:2])} together; no product could fit.")
-        if engine != "thermo" and (not jar or not Path(jar).exists()):
-            return "parameters", ("No virtualPCR.jar found. Select it under Run, or choose "
-                                  "the built-in engine.")
+        if engine != "thermo":
+            if not jar or not Path(jar).is_file():
+                return "jar", ("No virtualPCR.jar found. Select it under Run, or choose "
+                               "the built-in engine.")
+            try:
+                _runner.select_java(jar)
+            except JarError as e:
+                return "parameters", f"{e} Or choose the built-in engine, which needs no Java."
+            except Exception as e:      # an unreadable JAR
+                return "parameters", f"{Path(jar).name} cannot be used: {e}"
 
         # 4. Output: only when the run will write there. Checked afresh: a
         # network drive may have gone since the folder was chosen.
