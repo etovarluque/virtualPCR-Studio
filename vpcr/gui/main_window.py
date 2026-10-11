@@ -48,9 +48,9 @@ from vpcr.gui.summary_view import SummaryPage
 from vpcr.gui.toast import ToastHost
 from vpcr.gui.widgets import (NoWheelComboBox, NoWheelDoubleSpinBox,
                              NoWheelSpinBox, SegmentedControl)
-from vpcr.core.export import (EXCEL_ROW_LIMIT, detail_table, export_run,
-                              run_folder_name, summary_table, unique_dir,
-                              write_tables)
+from vpcr.core.export import (EXCEL_ROW_LIMIT, OutputCheck, check_output_dir,
+                              detail_table, export_run, run_folder_name,
+                              summary_table, unique_dir, write_tables)
 from vpcr.core.model import STUDIO_DEFAULTS, PrimerPair, RunConfig
 from vpcr.core.primers import MIN_PRIMER_LEN
 from vpcr.core.runner import (JarError, discover_javas, jar_class_version,
@@ -443,8 +443,15 @@ class MainWindow(QMainWindow):
         refresh = self._refresh_summaries
         self.jar_edit.textChanged.connect(refresh)
         self.run_label.textChanged.connect(refresh)
+        self._out_check = check_output_dir(self.out_edit.text())
+        self._out_timer = QTimer(self)
+        self._out_timer.setSingleShot(True)
+        self._out_timer.setInterval(300)
+        self._out_timer.timeout.connect(self._check_output)
+        self.out_edit.textChanged.connect(lambda *_: self._out_timer.start())
         self.out_edit.textChanged.connect(refresh)
         self.auto_export.toggled.connect(refresh)
+        self.keep.toggled.connect(refresh)
         # Every PARAM_DEFAULTS widget, or "modified" and Reset go stale.
         for w in (self.min_len, self.max_len, self.err3, self.workers):
             w.valueChanged.connect(refresh)
@@ -550,10 +557,19 @@ class MainWindow(QMainWindow):
 
         label = self.run_label.text().strip()
         folder = Path(self.out_edit.text().strip() or ".").name
+        oc = self._out_check
+        mode = "auto-export" if self.auto_export.isChecked() else "manual export"
         self.sections["output"].set_summary(
-            label or folder, "auto-export" if self.auto_export.isChecked() else "manual export",
-            self.out_edit.text().strip())
-        self.sections["output"].set_ready(bool(self.out_edit.text().strip()))
+            label or folder, mode if oc.ok else oc.message,
+            f"{self.out_edit.text().strip()}\n{oc.message}")
+        if oc.ok:
+            self.sections["output"].set_ready(True)
+        else:
+            self.sections["output"].set_problem(oc.message)
+        self.out_status.setText(("✓ " if oc.ok else "⚠ ") + oc.message[:1].upper() + oc.message[1:])
+        self.out_status.setProperty("ok", "true" if oc.ok else "false")
+        self.out_status.style().unpolish(self.out_status)
+        self.out_status.style().polish(self.out_status)
 
         jobs = len(self.primers.selected) * n * (2 if engine == "both" else 1)
         self.jobs_label.setText(f"{jobs} job{'s' if jobs != 1 else ''}" if jobs
@@ -966,6 +982,10 @@ class MainWindow(QMainWindow):
         self.auto_export.setChecked(True)
         form = QFormLayout()
         form.addRow("Folder", orow)
+        # Whether a run can write there, tested on disk (check_output_dir).
+        self.out_status = QLabel("")
+        self.out_status.setObjectName("outputStatus")
+        form.addRow("", self.out_status)
         form.addRow("Run label", self.run_label)
         form.addRow(self.auto_export)
         page = QWidget()
@@ -1301,6 +1321,11 @@ class MainWindow(QMainWindow):
             ("primers", "Add at least one primer pair.") if not pairs else
             ("parameters", "Min amplicon length exceeds max.")
             if self.min_len.value() > self.max_len.value() else None)
+        if problem is None and (self.keep.isChecked() or self.auto_export.isChecked()):
+            # Checked again now: a network drive may have gone since it was set.
+            oc = self._check_output()
+            if not oc.ok:
+                problem = ("output", f"The output folder cannot be used: {oc.message}.")
         if problem is not None:
             self.open_section(problem[0])
             self.toasts.show("warning", problem[1])
@@ -1518,6 +1543,12 @@ class MainWindow(QMainWindow):
         self.rail.set_badge("log", "!", "bad")
         self.toasts.show("error", f"Run failed: {msg.splitlines()[0] if msg else ''}",
                          [("Show log", lambda: self.show_view("log"))])
+
+    def _check_output(self) -> OutputCheck:
+        """Test the output folder now, and show the answer on the tile."""
+        self._out_check = check_output_dir(self.out_edit.text())
+        self._refresh_summaries()
+        return self._out_check
 
     def pick_output_dir(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "Output folder", self.out_edit.text())

@@ -351,6 +351,10 @@ def stylesheet(t: dict[str, str], a: dict[str, str] | None = None) -> str:
     QFrame#tile[active="true"] {{ border: 2px solid {t['accent']}; }}
     QFrame#tile[drag="accept"] {{ border: 2px dashed {t['accent']}; background: {t['accent_soft']}; }}
     QFrame#tile[drag="reject"] {{ border: 2px dashed {t['bad']}; }}
+    QFrame#tile[problem="true"] {{ border: 1px solid {t['bad']}; background: {t['bad_bg']}; }}
+    QLabel#tileCheck[problem="true"] {{ background: {t['bad']}; color: #ffffff; }}
+    QLabel#outputStatus[ok="true"] {{ color: {t['good']}; }}
+    QLabel#outputStatus[ok="false"] {{ color: {t['bad']}; font-weight: 600; }}
     QFrame#kpi {{ background: {t['card']}; border: 1px solid {t['line']}; border-radius: 8px; }}
     QLabel#kpiValue {{ font-size: 20px; font-weight: 700; color: {t['ink']}; }}
     QLabel#kpiValue[warn="true"] {{ color: {t['warn']}; }}

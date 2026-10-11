@@ -97,7 +97,18 @@ results fill the rest:
 
 Each **tile** summarises its section and shows a ✓ once that section is ready
 for a run: targets added, at least one pair ticked, a JAR found (or the built-in
-engine chosen), an output folder. Its tooltip holds the full detail.
+engine chosen), an output folder a run can write to. Its tooltip holds the full
+detail.
+
+The output folder is **tested, not assumed**: a temporary file is created and
+removed in it (on Windows, `os.access` ignores ACLs and share permissions), and
+a folder that does not exist yet is judged by the nearest parent it would be
+created in. A missing drive, a path that is a file, or a folder without write
+permission turns the tile red with a "!" and the reason, also shown under the
+*Folder* field. A run that writes (auto-export or raw .out reports) checks again
+at *Run*, in case a network drive went away, and stops there with the reason
+rather than failing at the end. The check waits 300 ms after typing stops, so it
+does not touch the disk on every key.
 
 **Click a tile** to open its form in the **drawer**, a sheet that drops from
 the strip over the results; click the tile again, or another, to close or

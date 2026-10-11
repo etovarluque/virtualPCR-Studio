@@ -10,10 +10,11 @@ group is assay-specific and therefore opt-in via `header_fields`.
 """
 from __future__ import annotations
 
+import tempfile
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, NamedTuple, Sequence
 
 import pandas as pd
 
@@ -331,6 +332,41 @@ def run_folder_name(
     if len(stem) > max_len:
         stem = f"{len(names)}-pairs" if len(names) > 1 else stem[:max_len].rstrip("._-")
     return f"{stem}_{ts}"
+
+
+class OutputCheck(NamedTuple):
+    ok: bool
+    message: str     # what the tile shows: "writable", "will be created", or the problem
+
+
+def check_output_dir(path: str | Path) -> OutputCheck:
+    """Can a run's folder be written under `path`? Tried, not assumed.
+
+    An existing folder is tested by creating and removing a temporary file in
+    it: on Windows, os.access answers from the read-only attribute and ignores
+    ACLs and share permissions, so it says yes to folders that refuse writes.
+    A folder that does not exist yet is judged by its nearest existing parent,
+    which is where it would be created; none at all means the drive is gone.
+    """
+    text = str(path).strip()
+    if not text:
+        return OutputCheck(False, "no folder set")
+    p = Path(text).expanduser()
+    if p.exists() and not p.is_dir():
+        return OutputCheck(False, "a file, not a folder")
+    probe = next((a for a in (p, *p.parents) if a.exists()), None)
+    if probe is None or (p.anchor and not Path(p.anchor).exists()):
+        drive = p.drive or p.anchor or text
+        return OutputCheck(False, f"{drive} is not available")
+    if not probe.is_dir():
+        return OutputCheck(False, f"{probe.name} is a file, not a folder")
+    try:
+        with tempfile.TemporaryFile(dir=probe):
+            pass
+    except OSError:
+        return OutputCheck(False, "no permission to write here" if probe == p
+                           else f"no permission to create it in {probe}")
+    return OutputCheck(True, "writable" if probe == p else "will be created")
 
 
 def unique_dir(base: str | Path, name: str) -> Path:

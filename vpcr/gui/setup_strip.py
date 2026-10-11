@@ -85,7 +85,21 @@ class SetupTile(_DropMixin, QFrame):
         return " • ".join(t for t in self._texts if t)
 
     def set_ready(self, ready: bool) -> None:
+        self.set_problem(None)
         self.check.setVisible(ready)
+
+    def set_problem(self, problem: str | None) -> None:
+        """Mark the tile as blocking: a red "!" in place of the check and a red
+        outline. The reason belongs in the tile's summary, set by the caller."""
+        on = problem is not None
+        if (self.property("problem") == "true") != on:
+            self.setProperty("problem", "true" if on else "false")
+            self.check.setProperty("problem", "true" if on else "false")
+            _repolish(self)
+            _repolish(self.check)
+        self.check.setText("!" if on else "✓")
+        if on:
+            self.check.setVisible(True)
 
     def set_active(self, active: bool) -> None:
         self.setProperty("active", "true" if active else "false")
