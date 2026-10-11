@@ -151,14 +151,62 @@ def find_java(explicit: str | None = None) -> JavaInfo:
     return info
 
 
+_JAVA_ROOTS = (r"C:\Program Files\Java", r"C:\Program Files\Eclipse Adoptium",
+               r"C:\Program Files\Microsoft", r"C:\Program Files\Zulu",
+               r"C:\Program Files\Amazon Corretto", r"C:\Program Files\BellSoft",
+               r"C:\Program Files\Semeru", "/usr/lib/jvm", "/Library/Java/JavaVirtualMachines")
+
+
+def _registry_javas() -> list[str]:
+    """java.exe from what Windows records now, not from this process's
+    environment: a JDK installed while the app runs updates the registry's
+    PATH and JAVA_HOME, never the copy the app started with."""
+    if sys.platform != "win32":
+        return []
+    import winreg
+    found: list[str] = []
+
+    def value(hive, key, name):
+        try:
+            with winreg.OpenKey(hive, key) as k:
+                return str(winreg.QueryValueEx(k, name)[0])
+        except OSError:
+            return ""
+
+    homes: list[str] = []
+    env_keys = ((winreg.HKEY_LOCAL_MACHINE,
+                 r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+                (winreg.HKEY_CURRENT_USER, "Environment"))
+    dirs: list[str] = []
+    for hive, key in env_keys:
+        homes.append(value(hive, key, "JAVA_HOME"))
+        dirs += value(hive, key, "Path").split(";")
+    # Oracle's and Adoptium's installers also list each JDK under JavaSoft.
+    for kind in ("JDK", "JRE", "Java Development Kit", "Java Runtime Environment"):
+        base = rf"SOFTWARE\JavaSoft\{kind}"
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, base) as k:
+                n = winreg.QueryInfoKey(k)[0]
+                versions = [winreg.EnumKey(k, i) for i in range(n)]
+        except OSError:
+            continue
+        homes += [value(winreg.HKEY_LOCAL_MACHINE, rf"{base}\{v}", "JavaHome") for v in versions]
+    dirs += [str(Path(h) / "bin") for h in homes if h]
+    for d in dirs:
+        d = os.path.expandvars(d.strip().strip('"'))
+        if d and (exe := Path(d) / "java.exe").is_file():
+            found.append(str(exe))
+    return found
+
+
 def discover_javas() -> list[JavaInfo]:
     """Every runnable JRE we can find, newest first."""
     seen: dict[str, JavaInfo] = {}
     cands: list[str] = []
     if (w := shutil.which("java")):
         cands.append(w)
-    for root in (r"C:\Program Files\Java", r"C:\Program Files\Eclipse Adoptium",
-                 "/usr/lib/jvm", "/Library/Java/JavaVirtualMachines"):
+    cands += _registry_javas()
+    for root in _JAVA_ROOTS:
         p = Path(root)
         if not p.is_dir():
             continue
@@ -168,10 +216,11 @@ def discover_javas() -> list[JavaInfo]:
                 if exe.exists():
                     cands.append(str(exe))
     for exe in cands:
-        if exe in seen:
+        key = os.path.normcase(os.path.realpath(exe))   # one probe per JRE
+        if key in seen:
             continue
         if (info := _probe_java(exe)):
-            seen[exe] = info
+            seen[key] = info
     return sorted(seen.values(), key=lambda j: j.feature, reverse=True)
 
 

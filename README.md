@@ -269,9 +269,12 @@ On that machine, install Python 3.10+ and a JRE, then double-click
 `Run vPCR.bat`.
 
 `java -version` should print 25 or higher for the JAR in `jar/`. The app
-searches for JREs on `PATH`, under `C:\Program Files\Java` and
-`C:\Program Files\Eclipse Adoptium`, and picks one new enough for the JAR. Java
-does not have to be on `PATH`: a JDK in one of those folders is found anyway.
+searches for JREs on `PATH`, in the `PATH` and `JAVA_HOME` Windows records now
+(so a JDK installed while the app is open counts), in the JDKs the installers
+register under `JavaSoft`, and under the usual install folders (`Java`,
+`Eclipse Adoptium`, `Microsoft`, `Zulu`, `Amazon Corretto`, `BellSoft`, `Semeru`
+in `C:\Program Files`); it picks one new enough for the JAR. Java does not have
+to be on `PATH`.
 Free builds: [Eclipse Temurin](https://adoptium.net/temurin/releases/?version=25).
 
 Without a suitable Java, a JAR engine (*virtualPCR JAR* or *Both*) is flagged
@@ -281,6 +284,11 @@ as soon as the app opens: the *Parameters* tile turns red with the reason
 for Java afresh — it may have been installed with the app open — and, if it
 still cannot run, raises a toast with **Download Java** and **Use built-in
 engine**; *Run* does the same. The built-in engine needs no Java.
+
+No restart is needed after installing Java. While the JAR is waiting for one,
+the app looks again in the background each time it comes back to the front —
+from the installer, say — and when Java is there the tile turns green and a
+toast says "Java 25 found — the JAR engine is ready".
 
 The JAR always lives in `jar/virtualPCR.jar`, and the app takes it from there
 at start, whether or not a Java to run it is installed — a missing or too old

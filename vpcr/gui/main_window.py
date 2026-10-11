@@ -322,6 +322,18 @@ class RunWorker(QThread):
             self.failed.emit(f"{e}\n\n{traceback.format_exc()}")
 
 
+class JavaScan(QThread):
+    """discover_javas() off the GUI thread: each probe starts a JVM."""
+    found = pyqtSignal(int)         # newest feature release, 0 if none
+
+    def run(self) -> None:
+        try:
+            best = max((j.feature for j in _runner.discover_javas()), default=0)
+        except Exception:
+            best = 0
+        self.found.emit(best)
+
+
 # ---------------------------------------------------------------------------
 # main window
 # ---------------------------------------------------------------------------
@@ -342,6 +354,11 @@ class MainWindow(QMainWindow):
         # Newest Java found (0 = none), and the Java each JAR file needs.
         self._java_best = 0
         self._jar_need_cache: dict[tuple[str, float], int] = {}
+        # Java installed while the app runs is found when the app is back in
+        # front: no restart needed.
+        self._java_scan: JavaScan | None = None
+        if (app := QApplication.instance()) is not None:
+            app.applicationStateChanged.connect(self._on_app_state)
         self._auto_note_shown = False
         self._jar_sha: dict = {}
         self._settings = QSettings("IAvH", APP_NAME)
@@ -733,6 +750,9 @@ class MainWindow(QMainWindow):
             self.worker.cancel()
             with self._busy("Stopping the run…"):
                 self.worker.wait()
+        if self._java_scan is not None and self._java_scan.isRunning():
+            self._java_scan.found.disconnect()
+            self._java_scan.wait()      # a few `java -version` at most
         self._save_timer.stop()
         self._save_ui_state()
         super().closeEvent(event)
@@ -1319,6 +1339,32 @@ class MainWindow(QMainWindow):
         """Look for installed Javas again; the newest feature release, 0 if none."""
         self._java_best = max((j.feature for j in _runner.discover_javas()), default=0)
         return self._java_best
+
+    def _on_app_state(self, state) -> None:
+        """Back from another window, perhaps a Java installer: if the JAR is
+        waiting for Java, look again."""
+        if state != Qt.ApplicationState.ApplicationActive or sip.isdeleted(self):
+            return
+        need = self._jar_need()
+        if need is not None and need > 0 and self._java_best < need:
+            self.rescan_java()
+
+    def rescan_java(self) -> None:
+        """Look for Java in the background; say so when the JAR can now run."""
+        if self._java_scan is not None and self._java_scan.isRunning():
+            return
+        self._java_scan = JavaScan(self)
+        self._java_scan.found.connect(self._on_java_scanned)
+        self._java_scan.start()
+
+    def _on_java_scanned(self, best: int) -> None:
+        before, self._java_best = self._java_best, best
+        need = self._jar_need()
+        self._refresh_summaries()
+        if need and need > 0 and before < need <= best:
+            self._log(f"Java {best} found; the JAR engine can run.")
+            self.toasts.show("success", f"Java {best} found — the JAR engine is ready. "
+                             "No restart needed.")
 
     def _jar_need(self) -> int | None:
         """The Java the selected JAR needs; None without a JAR, -1 if unreadable."""
