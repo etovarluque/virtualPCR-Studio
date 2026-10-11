@@ -72,6 +72,12 @@ engine (see [section 7](#7-the-two-engines)).
 The window remembers its size and position. It opens at 1082 × 764 the first
 time.
 
+**Help → About virtualPCR Studio** shows the version you are running, the
+virtualPCR.jar build in use, and the licence. **Help → User guide** opens this
+guide.
+
+![About](img/18_about.png)
+
 ---
 
 ## 3. Setting up a run

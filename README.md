@@ -13,7 +13,9 @@ there is no Java.
 **Using the app:** download the Windows build from
 [Releases](https://github.com/etovarluque/virtual-PCR-GUI/releases) — unzip and
 run `virtualPCR Studio.exe`, no Python needed — and read the
-**[user guide](docs/USER_GUIDE.md)**. This README is the technical reference.
+**[user guide](docs/USER_GUIDE.md)** (also under *Help → User guide*). *Help →
+About* shows the version (`vpcr.__version__`). This README is the technical
+reference.
 
 ![virtualPCR Studio](docs/img/07_summary.png)
 

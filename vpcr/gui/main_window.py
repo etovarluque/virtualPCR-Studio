@@ -33,7 +33,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                              QScrollArea, QSizePolicy, QStackedWidget, QTabWidget,
                              QTableView, QToolButton, QVBoxLayout, QWidget)
 
-from vpcr import APP_NAME, APP_ROOT, JAR_DIR
+from vpcr import APP_NAME, APP_ROOT, JAR_DIR, __version__
 from vpcr.gui import app_settings, theme
 from vpcr.gui.alignment_view import AlignmentTab
 from vpcr.gui.primer_map import PrimerMapTab
@@ -74,6 +74,8 @@ VIEWS = (
 # one of the install folders the runner searches. The page itself, not one
 # version: it offers the newest, and any release from the JAR's on runs it.
 JAVA_DOWNLOAD = "https://adoptium.net/temurin/releases/"
+REPO_URL = "https://github.com/etovarluque/virtual-PCR-GUI"
+UPSTREAM_URL = "https://github.com/rkalendar/virtualPCR"
 
 # The target list in its drawer: five rows, then it scrolls.
 TARGET_LIST_HEIGHT = 140
@@ -819,6 +821,14 @@ class MainWindow(QMainWindow):
         a = QAction("Verify virtualPCR.jar", self)
         a.setToolTip("Run the self-test: templates with known products, compared base for base")
         a.triggered.connect(self.verify_jar)
+        h.addAction(a)
+        h.addSeparator()
+        a = QAction("User guide", self)
+        a.triggered.connect(self.open_guide)
+        h.addAction(a)
+        a = QAction(f"About {APP_NAME}", self)
+        a.setMenuRole(QAction.MenuRole.AboutRole)
+        a.triggered.connect(self.show_about)
         h.addAction(a)
 
         # The theme toggle itself sits at the foot of the rail.
@@ -1578,6 +1588,32 @@ class MainWindow(QMainWindow):
 
     def collect_pairs(self) -> list[PrimerPair]:
         return self.primers.selected
+
+    def open_guide(self) -> None:
+        """The guide shipped beside the app, or the copy on GitHub."""
+        local = APP_ROOT / "docs" / "USER_GUIDE.md"
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(local)) if local.is_file()
+                                 else QUrl(f"{REPO_URL}/blob/main/docs/USER_GUIDE.md"))
+
+    def show_about(self) -> None:
+        jar = self.jar_edit.text().strip()
+        try:
+            build = jar_check.describe(jar_check.jar_sha256(jar)) if jar else "none selected"
+        except OSError:
+            build = "not found"
+        from PyQt6.QtCore import PYQT_VERSION_STR, QT_VERSION_STR
+        QMessageBox.about(self, f"About {APP_NAME}", (
+            f"<h3>{APP_NAME} {__version__}</h3>"
+            "<p>In silico PCR over FASTA targets, with a biological score for every "
+            "predicted product, a virtual gel and a PDF report.</p>"
+            f"<p><b>Search engine:</b> virtualPCR by Ruslan Kalendar — "
+            f"<a href='{UPSTREAM_URL}'>github.com/rkalendar/virtualPCR</a><br>"
+            f"Selected JAR: {build}<br>"
+            "Kalendar R. et al. (2024) <i>Frontiers in Molecular Biosciences.</i></p>"
+            f"<p><a href='{REPO_URL}'>github.com/etovarluque/virtual-PCR-GUI</a><br>"
+            "Free software under the GNU General Public License v3.</p>"
+            f"<p style='color:gray'>Python {sys.version.split()[0]} · Qt {QT_VERSION_STR} · "
+            f"PyQt {PYQT_VERSION_STR}</p>"))
 
     def show_env(self) -> None:
         lines = ["Java runtimes found:"]
