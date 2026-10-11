@@ -34,7 +34,7 @@ This guide covers version 1.0.1.
 ## 1. Installing
 
 1. Download `virtualPCR-Studio-1.0.1-win64.zip` from the
-   [Releases page](https://github.com/etovarluque/virtual-PCR-GUI/releases).
+   [Releases page](https://github.com/etovarluque/virtualPCR-Studio/releases).
 2. Unzip it anywhere you can write to, for example `C:\virtualPCR Studio` or
    your Documents folder. Keep the folder together. `virtualPCR Studio.exe`
    looks for `jar\virtualPCR.jar` next to itself and saves results in `output\`
@@ -433,7 +433,7 @@ a transilluminator.
 | The app closes unexpectedly | Details are in `crash.log` next to the exe. Please include it when reporting the problem. |
 
 Problems and suggestions:
-[github.com/etovarluque/virtual-PCR-GUI/issues](https://github.com/etovarluque/virtual-PCR-GUI/issues).
+[github.com/etovarluque/virtualPCR-Studio/issues](https://github.com/etovarluque/virtualPCR-Studio/issues).
 
 ---
 

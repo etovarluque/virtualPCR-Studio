@@ -11,7 +11,7 @@ engine can run beside the JAR as a second opinion, or instead of it where
 there is no Java.
 
 **Using the app:** download the Windows build from
-[Releases](https://github.com/etovarluque/virtual-PCR-GUI/releases) — unzip and
+[Releases](https://github.com/etovarluque/virtualPCR-Studio/releases) — unzip and
 run `virtualPCR Studio.exe`, no Python needed — and read the
 **[user guide](docs/USER_GUIDE.md)** (also under *Help → User guide*). *Help →
 About* shows the version (`vpcr.__version__`). This README is the technical

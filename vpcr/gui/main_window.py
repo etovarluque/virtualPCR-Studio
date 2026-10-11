@@ -74,7 +74,7 @@ VIEWS = (
 # one of the install folders the runner searches. The page itself, not one
 # version: it offers the newest, and any release from the JAR's on runs it.
 JAVA_DOWNLOAD = "https://adoptium.net/temurin/releases/"
-REPO_URL = "https://github.com/etovarluque/virtual-PCR-GUI"
+REPO_URL = "https://github.com/etovarluque/virtualPCR-Studio"
 UPSTREAM_URL = "https://github.com/rkalendar/virtualPCR"
 
 # The target list in its drawer: five rows, then it scrolls.
@@ -1610,7 +1610,7 @@ class MainWindow(QMainWindow):
             f"<a href='{UPSTREAM_URL}'>github.com/rkalendar/virtualPCR</a><br>"
             f"Selected JAR: {build}<br>"
             "Kalendar R. et al. (2024) <i>Frontiers in Bioinformatics</i> 4:1464197.</p>"
-            f"<p><a href='{REPO_URL}'>github.com/etovarluque/virtual-PCR-GUI</a><br>"
+            f"<p><a href='{REPO_URL}'>github.com/etovarluque/virtualPCR-Studio</a><br>"
             "Free software under the GNU General Public License v3.</p>"
             f"<p style='color:gray'>Python {sys.version.split()[0]} · Qt {QT_VERSION_STR} · "
             f"PyQt {PYQT_VERSION_STR}</p>"))
