@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from PyQt6.QtCore import QSettings, Qt
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (QDialog, QDialogButtonBox, QHBoxLayout,
                              QHeaderView, QLabel, QMessageBox, QPushButton,
                              QSplitter, QTableWidget, QTableWidgetItem,
@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (QDialog, QDialogButtonBox, QHBoxLayout,
 from vpcr import APP_NAME
 from vpcr.core.model import Primer, PrimerPair
 from vpcr.core.primers import combine, parse_ta, primer_set_from_pairs
+from vpcr.gui import app_settings
 from vpcr.gui.primer_io import load_pairs_interactive
 
 # Every pair is a separate JAR run over every target, so a large cartesian
@@ -79,7 +80,7 @@ class PrimerDialog(QDialog):
     def __init__(self, state: PrimerState, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("View/Select primers")
-        self._settings = QSettings("IAvH", APP_NAME)
+        self._settings = app_settings()
         self.state = state
         # Each entry is (table, button, tag) for a select/deselect-all toggle.
         self._toggles: list[tuple[QTableWidget, QPushButton, str]] = []

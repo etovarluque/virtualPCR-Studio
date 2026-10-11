@@ -22,7 +22,7 @@ from typing import Callable, NamedTuple
 
 import pandas as pd
 from PyQt6 import sip
-from PyQt6.QtCore import (QAbstractTableModel, QModelIndex, QPoint, QSettings, QSize,
+from PyQt6.QtCore import (QAbstractTableModel, QModelIndex, QPoint, QSize,
                           Qt, QThread, QTimer, QUrl, pyqtSignal)
 from PyQt6.QtGui import QAction, QActionGroup, QDesktopServices, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
@@ -34,7 +34,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                              QTableView, QToolButton, QVBoxLayout, QWidget)
 
 from vpcr import APP_NAME, APP_ROOT, JAR_DIR
-from vpcr.gui import theme
+from vpcr.gui import app_settings, theme
 from vpcr.gui.alignment_view import AlignmentTab
 from vpcr.gui.primer_map import PrimerMapTab
 from vpcr.gui.dnd import (FASTA_DIR_SUFFIXES, FASTA_SUFFIXES, JAR_SUFFIXES,
@@ -367,7 +367,7 @@ class MainWindow(QMainWindow):
             app.applicationStateChanged.connect(self._on_app_state)
         self._auto_note_shown = False
         self._jar_sha: dict = {}
-        self._settings = QSettings("IAvH", APP_NAME)
+        self._settings = app_settings()
         # Set before any widget exists: resizeEvent fires during construction.
         self._restoring = True
         self._save_timer = QTimer(self)
