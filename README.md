@@ -69,6 +69,7 @@ vpcr_app/
       dnd.py            drag-and-drop file widgets, including the drop zone
       setup_strip.py    the setup tiles and the filter chips
       summary_view.py   the Summary view: headline cards and the virtual gel
+      report.py         the PDF run report, with the gel
       nav_rail.py       the navigation rail down the left edge
       toast.py          toasts: notices in the corner of the results
       theme.py          light and dark themes, from one set of colour tokens
@@ -647,6 +648,7 @@ output/
     summary.csv
     detail.csv
     vpcr_results.xlsx
+    report.pdf           <- the run on a few pages, with the virtual gel
     run_log.txt          <- parameters, primers, targets, timings, warnings
 ```
 
@@ -670,6 +672,27 @@ their pairs are missing from the tables. **Cancel** drops the queued jobs and
 stops the JAR processes that are running, so it takes effect within a second.
 A cancelled run is not auto-exported; *Export results* still saves the jobs that
 finished. Closing the window during a run asks first, then stops it.
+
+**PDF report.** Every export also writes `report.pdf` (US Letter), and the
+*PDF report* button beside *Export* (or *File → Save PDF report…*) saves one
+wherever you choose. It is meant to be filed or shared without the app:
+
+* the headline numbers of the Summary tab;
+* the **virtual gel** at print resolution, with a key giving each lane's pair,
+  the share of sequences that amplify and its main sizes (beside the gel when
+  it is narrow, across the page when many pairs widen it);
+* the result per pair: sequences, amplified, likely, sequences with more than
+  one band size, size median and range, Ta, and the engines' agreement when
+  both ran;
+* the primers, 5'→3';
+* the run setup as it was when *Run* was pressed — targets, engine, the JAR
+  build with its SHA-256 and self-test verdict, Java, every parameter — so a
+  parameter changed afterwards does not leak in;
+* a warning at the top when the run was cancelled or jobs failed, and a note
+  when circular templates went through the JAR's linear mode.
+
+It is laid out by Qt (`gui/report.py`), so it needs no extra package. The full
+tables stay in the CSV and Excel files.
 
 If the workbook is still open in Excel the write fails with a permission error,
 and the app says so instead of failing silently.

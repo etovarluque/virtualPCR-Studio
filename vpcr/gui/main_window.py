@@ -42,6 +42,7 @@ from vpcr.gui.dnd import (FASTA_DIR_SUFFIXES, FASTA_SUFFIXES, JAR_SUFFIXES,
                           DropListWidget, DropZone)
 from vpcr.gui.primer_dialog import PrimerDialog, PrimerState
 from vpcr.gui.primer_io import load_pairs_interactive
+from vpcr.gui.report import RunInfo, write_report
 from vpcr.gui.setup_strip import ChipBar, Scrim, SetupTile
 from vpcr.gui.nav_rail import NavRail, compact_count
 from vpcr.gui.summary_view import SummaryPage
@@ -354,6 +355,7 @@ class MainWindow(QMainWindow):
         # Folder chosen once per run so the .out reports and the export share it.
         self._run_outdir: Path | None = None
         self._run_include_sequence = True
+        self._run_info: RunInfo | None = None
         # The primer tables live in a dialog that is rebuilt on every open, so
         # the window, not a widget, owns what was loaded.
         self.primers = PrimerState()
@@ -781,7 +783,8 @@ class MainWindow(QMainWindow):
         for text, slot in (("Add FASTA targets...", self.add_targets),
                            ("Load primer pairs...", lambda: self.load_primers()),
                            ("Manage primers...", self.manage_primers),
-                           ("Export results...", self.export_results)):
+                           ("Export results...", self.export_results),
+                           ("Save PDF report...", self.save_report)):
             a = QAction(text, self)
             a.triggered.connect(slot)
             m.addAction(a)
@@ -1229,6 +1232,12 @@ class MainWindow(QMainWindow):
         self.export_btn.setEnabled(False)
         self.export_btn.clicked.connect(self.export_results)
         head.addWidget(self.export_btn)
+        self.report_btn = QPushButton("PDF report")
+        self.report_btn.setProperty("compact", "true")
+        self.report_btn.setEnabled(False)
+        self.report_btn.setToolTip("Save a PDF report of this run, with the virtual gel")
+        self.report_btn.clicked.connect(self.save_report)
+        head.addWidget(self.report_btn)
         lay.addLayout(head)
         lay.addWidget(self.tabs, 1)
         return w
@@ -1640,6 +1649,7 @@ class MainWindow(QMainWindow):
         # Exports describe the run that produced the results, not whatever the
         # checkbox says by the time someone presses Export.
         self._run_include_sequence = cfg.sequence_extract
+        self._run_info = self._capture_run_info(chosen, engine, jar, topology, reaction, cfg)
         # One folder per run, named once here so its timestamp is stable between
         # the worker (which writes the .out reports as it goes) and the export at
         # the end. With both options on, 'Keep raw .out' and auto-export land
@@ -1658,6 +1668,7 @@ class MainWindow(QMainWindow):
         self.run_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self.export_btn.setEnabled(False)
+        self.report_btn.setEnabled(False)
         self.alignment_tab.set_results([])
         self.primer_map_tab.set_results([])
         self.summary_page.set_results(None, [])
@@ -1839,6 +1850,7 @@ class MainWindow(QMainWindow):
             self.detail_filter.setEnabled(True)
             self._apply_detail_filter()
             self.export_btn.setEnabled(True)
+            self.report_btn.setEnabled(True)
             self.tabs.setCurrentIndex(0)
             self.rail.set_badge("summary", compact_count(len(summary)))
             self.rail.set_badge("detail", compact_count(len(detail)))
@@ -1870,6 +1882,7 @@ class MainWindow(QMainWindow):
         except MemoryError:
             self._detail_df = None
             self.export_btn.setEnabled(bool(results))
+            self.report_btn.setEnabled(bool(results))
             self._log("OUT OF MEMORY while building the result tables. The run itself "
                       "finished; try fewer pairs/targets per run or turn off "
                       "'Extract amplicon sequences'.")
@@ -1939,6 +1952,11 @@ class MainWindow(QMainWindow):
             self.toasts.show("error", f"Export failed: {e}")
             return None
 
+        try:
+            paths["report"] = write_report(outdir / "report.pdf", self.results,
+                                           self._report_info())
+        except Exception as e:
+            self._log(f"REPORT FAILED (the tables were written): {e}")
         self._log(f"Exported to {outdir}")
         for k, v in paths.items():
             self._log(f"  {k}: {v.name}")
@@ -1957,6 +1975,56 @@ class MainWindow(QMainWindow):
                          [("Open folder",
                            lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder))))])
         return outdir
+
+    def _capture_run_info(self, chosen: str, engine: str, jar: str, topology: str,
+                          reaction: Reaction, cfg: RunConfig) -> RunInfo:
+        """The run's setup for its report, as it stands when Run is pressed."""
+        names = {"jar": "virtualPCR JAR", "thermo": "Built-in (thermodynamic)",
+                 "both": "Both (JAR and built-in)"}
+        uses_jar = engine in ("jar", "both")
+        ta = reaction.ta
+        return RunInfo(
+            started=datetime.now(), label=self.run_label.text().strip(),
+            engine=(f"Auto → {names[engine]}" if chosen == "auto" else names[engine]),
+            jar=jar if uses_jar else "",
+            java=f"Java {self._java_best}" if uses_jar and self._java_best else "",
+            circular_via_jar=uses_jar and topology != "linear",
+            params=[("Amplicon size", f"{cfg.min_len}–{cfg.max_len} bp"),
+                    ("3′ mismatches", str(cfg.n_3prime_errors)),
+                    ("Template", self.circular.currentText()),
+                    ("Polymerase", self.polymerase.currentText()),
+                    ("Annealing Ta", "auto (per pair)" if ta is None else f"{ta:g} °C"),
+                    ("Extension", f"{reaction.extension_s:g} s" if reaction.extension_s
+                     else "off"),
+                    ("Probe search", "on" if cfg.probe else "off")])
+
+    def _report_info(self) -> RunInfo:
+        return self._run_info or RunInfo(started=datetime.now(),
+                                         label=self.run_label.text().strip())
+
+    def save_report(self) -> None:
+        """Save the PDF report where the user says; the run folder by default."""
+        if not self.results:
+            self.toasts.show("info", "Nothing to report yet: run first."); return
+        info = self._report_info()
+        folder = self._run_outdir if self._run_outdir and self._run_outdir.exists() \
+            else self._output_base()
+        name = run_folder_name(list({r.pair.name: r.pair for r in self.results}.values()),
+                               info.started, info.label) + "_report.pdf"
+        path, _ = QFileDialog.getSaveFileName(self, "Save PDF report", str(folder / name),
+                                              "PDF (*.pdf)")
+        if not path:
+            return
+        try:
+            with self._busy("Writing the PDF report…"):
+                out = write_report(path, self.results, info)
+        except Exception as e:
+            self._log(f"REPORT FAILED: {e}\n{traceback.format_exc()}")
+            self.toasts.show("error", f"The PDF report could not be written: {e}")
+            return
+        self._log(f"PDF report: {out}")
+        self.toasts.show("success", f"PDF report saved: {out.name}",
+                         [("Open", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(out))))])
 
     def export_results(self) -> None:
         if not self.results:
