@@ -247,7 +247,6 @@ class RunConfig:
     # takes one flag per run, so the runner resolves 'auto' before writing a
     # config: to_config_text never sees it.
     circular: bool | str = False
-    ct_conversion: bool = False
     sequence_extract: bool = True
     show_primer_alignment: bool = True
     show_pcr_products: bool = True
@@ -268,7 +267,8 @@ class RunConfig:
             f"molecular={'circle' if self.circular else 'linear'}",
             "linkedsearch=false",
             "FRpairs=false",
-            f"CTconversion={b(self.ct_conversion)}",
+            # No CTconversion: never implemented upstream, and the build of
+            # 2026-08-27 warns about it. Earlier builds default it to false.
             f"number3errors={self.n_3prime_errors}",
             f"minlen={self.min_len}",
             f"maxlen={self.max_len}",

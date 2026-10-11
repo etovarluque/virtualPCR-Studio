@@ -517,6 +517,13 @@ app uses — moving to 2026-08-27 changes no result. It does fix most of the
 circular mode (below), and it is the build its author maintains. The cost is
 Java 26.
 
+Reported Tm values are not the same, though. The 2026-08-27 build restored a
+term of its melting-temperature formula that earlier builds computed as zero,
+so every Tm the JAR reports is lower — by 0.6 to 0.9 °C on these templates;
+the author gives "about 1 °C". Sites, products and the reported Ta (rounded)
+did not change. The biological score computes its own thermodynamics and is
+unaffected. Compare Tm columns only between runs of the same build.
+
 Two things these templates do not settle. The 82 % vs 51 % gap in the table
 above came from real mitogenomes and an old build for Java 23 that is no longer
 in the upstream history; the old-generation build that is there behaves like

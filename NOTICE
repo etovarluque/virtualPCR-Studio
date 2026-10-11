@@ -18,10 +18,10 @@ version 3. It is the build published on 2026-08-27, upstream commit
     SHA-256 96e9b06bcf7cc6b4aa0bb3d3fc2db983a22ec0d81edbc89035b4c6801b1c7a56
     https://github.com/rkalendar/virtualPCR/tree/7208b64a376938d5e2b27edddebd2583fdd9fe80
 
-    Kalendar R., Shustov A.V., Akhmetollayev I., Kairov U. (2024)
-    Designing allele-specific competitive-extension PCR-based assays for
-    high-throughput genotyping and gene characterization.
-    Frontiers in Molecular Biosciences.
+    Kalendar R., Shevtsov A., Otarbay Z., Ismailova A. (2024)
+    In silico PCR analysis: a comprehensive bioinformatics tool for
+    enhancing nucleic acid amplification assays.
+    Frontiers in Bioinformatics 4:1464197. doi:10.3389/fbinf.2024.1464197
 
 The source the author publishes for that build (src/ at the commit above) is
 attached to each release of this app as virtualPCR-src-2026-08-27.zip. It

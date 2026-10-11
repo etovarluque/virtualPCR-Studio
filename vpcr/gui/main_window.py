@@ -1609,7 +1609,7 @@ class MainWindow(QMainWindow):
             f"<p><b>Search engine:</b> virtualPCR by Ruslan Kalendar — "
             f"<a href='{UPSTREAM_URL}'>github.com/rkalendar/virtualPCR</a><br>"
             f"Selected JAR: {build}<br>"
-            "Kalendar R. et al. (2024) <i>Frontiers in Molecular Biosciences.</i></p>"
+            "Kalendar R. et al. (2024) <i>Frontiers in Bioinformatics</i> 4:1464197.</p>"
             f"<p><a href='{REPO_URL}'>github.com/etovarluque/virtual-PCR-GUI</a><br>"
             "Free software under the GNU General Public License v3.</p>"
             f"<p style='color:gray'>Python {sys.version.split()[0]} · Qt {QT_VERSION_STR} · "

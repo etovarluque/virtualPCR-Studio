@@ -2,7 +2,7 @@
 import sys
 from pathlib import Path
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 APP_NAME = "virtualPCR Studio"
 

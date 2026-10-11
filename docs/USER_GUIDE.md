@@ -11,7 +11,7 @@ The search is done by **virtualPCR** by Ruslan Kalendar, bundled with the app.
 The app also has a built-in engine of its own, and it scores every predicted
 product on how well it would really amplify.
 
-This guide covers version 1.0.0.
+This guide covers version 1.0.1.
 
 ---
 
@@ -33,7 +33,7 @@ This guide covers version 1.0.0.
 
 ## 1. Installing
 
-1. Download `virtualPCR-Studio-1.0.0-win64.zip` from the
+1. Download `virtualPCR-Studio-1.0.1-win64.zip` from the
    [Releases page](https://github.com/etovarluque/virtual-PCR-GUI/releases).
 2. Unzip it anywhere you can write to, for example `C:\virtualPCR Studio` or
    your Documents folder. Keep the folder together. `virtualPCR Studio.exe`
@@ -388,14 +388,20 @@ These are worth knowing when you read its results:
    Every build tested does this. The biological score is what marks such a
    product down, so check the *Likely* column and the `min_3prime_dist` column.
 
-3. **Builds of different generations have given different numbers on real
+3. **Tm values reported by the JAR depend on the build.** The bundled build
+   corrected its melting-temperature formula, so its Tm values are about
+   0.6–0.9 °C lower than those of the 2026-07-08 build for the same sites. The
+   sites, products and Ta are unchanged, and the biological score is not
+   affected. Compare Tm columns only between runs of the same build.
+
+4. **Builds of different generations have given different numbers on real
    data.** In an earlier comparison on 13,522 vertebrate mitogenomes with the
    `L15411F`/`H15546R` primers, an older build (Java 23) amplified 82 % of the
    sequences and the 2026-07-08 build 51 %. That older build is no longer in the
    author's repository, and the synthetic test above could not reproduce the
    gap. Record which build you used, and do not mix builds within a study.
 
-4. **Source code.** The author publishes the source of the program's front end;
+5. **Source code.** The author publishes the source of the program's front end;
    the classes that perform the search are distributed only as compiled code.
    The source published for the bundled build is attached to each release of
    this app.
@@ -435,9 +441,10 @@ Problems and suggestions:
 
 If you use the virtualPCR engine's results, cite its author:
 
-> Kalendar R., Shustov A.V., Akhmetollayev I., Kairov U. (2024). Designing
-> allele-specific competitive-extension PCR-based assays for high-throughput
-> genotyping and gene characterization. *Frontiers in Molecular Biosciences.*
+> Kalendar R., Shevtsov A., Otarbay Z., Ismailova A. (2024). In silico PCR
+> analysis: a comprehensive bioinformatics tool for enhancing nucleic acid
+> amplification assays. *Frontiers in Bioinformatics* 4:1464197.
+> [doi:10.3389/fbinf.2024.1464197](https://doi.org/10.3389/fbinf.2024.1464197)
 
 virtualPCR Studio is free software under the GNU General Public License v3
 (`LICENSE`). virtualPCR.jar is distributed unmodified under the same licence;
