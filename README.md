@@ -99,13 +99,14 @@ Each **tile** summarises its section and shows a ✓ once that section is ready
 for a run: targets added, at least one pair ticked, a JAR found (or the built-in
 engine chosen), an output folder. Its tooltip holds the full detail.
 
-**Click a tile** to open its form in the **drawer** under the strip; click it
-again, or another tile, to close or switch. The drawer is as tall as the open
-form and no taller, and the strip never grows, so the results keep the height.
-In a short window the drawer takes at most 45% of it, and never more than the
-results leave free; past that it scrolls, with a visible scroll bar, rather
-than letting the results cover its last rows. *Reset to defaults* sits on the
-title row of the *Run* column, so it is in view whatever the window height.
+**Click a tile** to open its form in the **drawer**, a sheet that drops from
+the strip over the results; click the tile again, or another, to close or
+switch. The results never move or change height whichever form is open: the
+part the drawer leaves uncovered is dimmed, and a click there, **Esc**, or
+**Run** closes it. Notices stay above the dimming. The drawer is as tall as the
+open form, up to 70% of the window, always leaving a band of results in view;
+past that it scrolls, with a visible scroll bar. *Reset to defaults* sits on
+the title row of the *Run* column, so it is in view whatever the window height.
 *Parameters* lays its form out in three columns: *Amplicon*, *Biological score*
 and *Run* (which holds the JAR path). *View → … settings* opens a drawer from
 the menu too.
@@ -164,7 +165,8 @@ The window size and position and the theme are remembered between sessions, in
 `QSettings` under `IAvH / virtualPCR Studio`. Closing the console that launched
 the app kills the process without a `closeEvent`, so a resize schedules a save
 400 ms later and flushes it with `sync()` rather than relying on a clean
-shutdown. Minimum window size is 900 × 560.
+shutdown. Minimum window size is 960 × 560: the rail, the strip and the three
+Parameters columns all fit, with nothing clipped at the right edge.
 
 ## Parameter defaults
 

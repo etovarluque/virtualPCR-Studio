@@ -5,15 +5,21 @@ check once the section is ready. Clicking it opens the section's form in the
 drawer below the strip; clicking it again closes it. Tiles that take files
 (targets, primers) also accept them dropped straight onto the tile, with the
 same accept/refuse feedback as the drop zones in dnd.py.
+
+The drawer floats over the results rather than pushing them down, so the
+results keep one height whichever form is open. The Scrim dims what it covers
+and closes the drawer when clicked.
 """
 from __future__ import annotations
 
 from typing import Sequence
 
-from PyQt6.QtCore import QPoint, QRect, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QPoint, QPointF, QRect, QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QLinearGradient, QPainter
 from PyQt6.QtWidgets import (QButtonGroup, QFrame, QHBoxLayout, QLabel, QLayout,
                              QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 
+from vpcr.gui import theme
 from vpcr.gui.dnd import _DropMixin
 
 
@@ -221,3 +227,38 @@ class ChipBar(QWidget):
     def itemText(self, idx: int) -> str:  # noqa: N802
         b = self._group.button(idx)
         return b.text() if b else ""
+
+
+class Scrim(QWidget):
+    """The veil under the floating drawer: dims the results, closes on a click.
+
+    Its top edge carries a short shadow, which is what tells the eye the
+    drawer lies on top of the results rather than beside them. Painted here
+    instead of a QGraphicsDropShadowEffect on the drawer: an effect renders
+    the drawer and every field in it through an offscreen pixmap, on each
+    repaint of any of them.
+    """
+
+    clicked = pyqtSignal()
+    SHADOW = 14
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.hide()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        p = QPainter(self)
+        dark = theme.scheme() == "dark"
+        p.fillRect(self.rect(), QColor(0, 0, 0, 110 if dark else 46))
+        g = QLinearGradient(QPointF(0, 0), QPointF(0, self.SHADOW))
+        g.setColorAt(0, QColor(0, 0, 0, 120 if dark else 60))
+        g.setColorAt(1, QColor(0, 0, 0, 0))
+        p.fillRect(0, 0, self.width(), self.SHADOW, g)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        self.clicked.emit()
+        event.accept()
+
+    def wheelEvent(self, event) -> None:  # noqa: N802
+        event.accept()      # the results underneath do not scroll while dimmed

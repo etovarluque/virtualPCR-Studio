@@ -2,8 +2,8 @@
 
 Layout: a navigation rail down the left edge (the results views, and the
 theme toggle at its foot), a strip of setup tiles across the top (targets,
-primers, parameters, output, and Run), a drawer under it that opens the
-clicked tile's form, and the results below. News goes to toasts in the corner
+primers, parameters, output, and Run), a drawer that opens the clicked tile's
+form over the results, and the results below, at one height whatever is open. News goes to toasts in the corner
 of the results (gui/toast.py); message boxes are kept for questions. The JAR runs in a worker thread; the
 batch itself is parallel, so the GUI thread only marshals progress.
 
@@ -22,8 +22,8 @@ from typing import Callable, NamedTuple
 
 import pandas as pd
 from PyQt6 import sip
-from PyQt6.QtCore import (QAbstractTableModel, QModelIndex, QSettings, QSize, Qt,
-                          QThread, QTimer, QUrl, pyqtSignal)
+from PyQt6.QtCore import (QAbstractTableModel, QModelIndex, QPoint, QSettings, QSize,
+                          Qt, QThread, QTimer, QUrl, pyqtSignal)
 from PyQt6.QtGui import QAction, QActionGroup, QDesktopServices, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                              QComboBox, QDialog, QFileDialog, QFormLayout,
@@ -42,7 +42,7 @@ from vpcr.gui.dnd import (FASTA_DIR_SUFFIXES, FASTA_SUFFIXES, JAR_SUFFIXES,
                           DropListWidget, DropZone)
 from vpcr.gui.primer_dialog import PrimerDialog, PrimerState
 from vpcr.gui.primer_io import load_pairs_interactive
-from vpcr.gui.setup_strip import ChipBar, SetupTile
+from vpcr.gui.setup_strip import ChipBar, Scrim, SetupTile
 from vpcr.gui.nav_rail import NavRail, compact_count
 from vpcr.gui.summary_view import SummaryPage
 from vpcr.gui.toast import ToastHost
@@ -326,9 +326,21 @@ class MainWindow(QMainWindow):
         outer.addWidget(self._build_rail())
         outer.addLayout(column, 1)
         self.setCentralWidget(central)
-        self.setMinimumSize(900, 560)
-        # Notices land in the corner of the results, clear of the Run button.
-        self.toasts = ToastHost(self._results_host)
+        # Wide enough for the rail, the strip at its tiles' minimum width, and
+        # the three Parameters columns: narrower, the right edge is clipped.
+        self.setMinimumSize(960, 560)
+        # The drawer floats over the results instead of taking a slot in the
+        # column: whichever form is open, the results keep their height. The
+        # scrim dims them meanwhile, and a click on it closes the drawer.
+        self.scrim = Scrim(central)
+        self.scrim.clicked.connect(lambda: self.open_section(None))
+        self.drawer.setParent(central)
+        self.drawer.hide()
+        QShortcut(QKeySequence(Qt.Key.Key_Escape), self,
+                  activated=lambda: self.open_section(None))
+        # Notices land in the corner of the results, clear of the Run button,
+        # and above the scrim, so a toast is never dimmed by an open drawer.
+        self.toasts = ToastHost(central, self._results_host)
 
         self._build_menu()
         self._autodetect_jar()
@@ -385,6 +397,7 @@ class MainWindow(QMainWindow):
             tile.set_active(k == key)
         if key is None:
             self.drawer.setVisible(False)
+            self.scrim.setVisible(False)
             return
         page = self._drawer_pages[key]
         # Only the shown page may claim height, or the drawer is as tall as
@@ -397,19 +410,31 @@ class MainWindow(QMainWindow):
         self._drawer_stack.setCurrentWidget(page)
         # Exactly the height the form asks for: any less and the longest
         # column (Amplicon) is the one squeezed, so the columns lose their
-        # common row rhythm. The visible part is capped, though, so the
-        # results always keep the larger share of a short window; past the
-        # cap the drawer scrolls rather than hiding the form's last rows.
+        # common row rhythm. The visible part is capped, though, so a strip
+        # of dimmed results always shows below; past the cap the drawer
+        # scrolls rather than hiding the form's last rows.
         self._drawer_stack.setFixedHeight(page.sizeHint().height())
         self._fit_drawer()
         self.drawer.setVisible(True)
-        # Relayout now rather than on the next pass, or switching forms shows
-        # one frame at the previous form's height.
-        # activate() does not reach into child widgets' layouts, so each level
-        # is activated from the inside out.
-        for widget in (self.drawer, self.drawer.parentWidget(), self.centralWidget()):
-            if widget is not None and widget.layout() is not None:
-                widget.layout().activate()
+        self.scrim.setVisible(True)
+        self.drawer.layout().activate()
+        self._place_drawer()
+
+    def _place_drawer(self) -> None:
+        """Lay the drawer over the results, flush under the strip and as wide
+        as it, with the scrim over the rest of the results below it."""
+        central = self.centralWidget()
+        if central is None or not self.drawer.isVisible():
+            return
+        top_left = self._strip.mapTo(central, QPoint(0, self._strip.height()))
+        m = self.drawer.layout().contentsMargins()
+        h = self._drawer_scroll.height() + m.top() + m.bottom()
+        self.drawer.setGeometry(top_left.x(), top_left.y(), self._strip.width(), h)
+        self.scrim.setGeometry(top_left.x(), top_left.y() + h, self._strip.width(),
+                               max(0, central.height() - top_left.y() - h))
+        self.scrim.raise_()
+        self.drawer.raise_()
+        self.toasts.raise_all()
 
     # -- section summaries -------------------------------------------------
 
@@ -584,23 +609,26 @@ class MainWindow(QMainWindow):
         self.summary_model.repaint_colors()
         self.detail_model.repaint_colors()
 
-    # Share of the window height the open drawer may take.
-    DRAWER_MAX_SHARE = 0.45
+    # Share of the window height the open drawer may take. It covers the
+    # results rather than shrinking them, so it can take more than it could
+    # when it pushed them down; what is left shows dimmed below it.
+    DRAWER_MAX_SHARE = 0.7
+    # The least of the dimmed results kept in view under the drawer, so it
+    # still reads as a sheet over them and has somewhere to click to close.
+    DRAWER_GAP = 60
 
     def _fit_drawer(self) -> None:
         if self._open_section is None:
             return
         need = self._drawer_stack.minimumHeight()   # fixed to the form's height
         cap = int(self.height() * self.DRAWER_MAX_SHARE)
-        # Never more than the room the results leave: past it Qt clips the
-        # drawer instead of scrolling it, and the hidden rows give no sign.
         if (central := self.centralWidget()) is not None:
             margins = self.drawer.layout().contentsMargins()
             room = (central.height() - self._strip.sizeHint().height()
-                    - self._results_host.minimumSizeHint().height()
-                    - margins.top() - margins.bottom())
+                    - self.DRAWER_GAP - margins.top() - margins.bottom())
             cap = min(cap, room)
         self._drawer_scroll.setFixedHeight(max(90, min(need, cap)))
+        self._place_drawer()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
@@ -697,9 +725,9 @@ class MainWindow(QMainWindow):
         row.setContentsMargins(14, 12, 14, 12)
         row.setSpacing(10)
 
+        # Parented to the central widget once that exists (see __init__).
         self.drawer = QFrame()
         self.drawer.setObjectName("drawer")
-        self.drawer.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self._drawer_stack = QStackedWidget()
         self._drawer_scroll = QScrollArea()
         self._drawer_scroll.setObjectName("drawerScroll")
@@ -736,7 +764,6 @@ class MainWindow(QMainWindow):
         row.addWidget(self._run_box())
 
         v.addWidget(strip)
-        v.addWidget(self.drawer)
         return host
 
     def _targets_page(self) -> QWidget:
@@ -1278,6 +1305,7 @@ class MainWindow(QMainWindow):
             self.open_section(problem[0])
             self.toasts.show("warning", problem[1])
             return
+        self.open_section(None)
 
         # The JAR silently discards primers shorter than this and then fails
         # with 'Failed to open primer's file', which explains nothing.

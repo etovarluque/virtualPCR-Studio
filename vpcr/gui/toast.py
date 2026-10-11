@@ -182,20 +182,29 @@ class Toast(QFrame):
 
 
 class ToastHost(QObject):
-    """Stacks toasts in the bottom-right corner of `anchor`, newest lowest.
+    """Stacks toasts in the bottom-right corner of `area`, newest lowest.
+
+    Toasts are children of `anchor` and placed over the part of it that `area`
+    covers (the whole anchor when no area is given). The main window passes
+    its central widget as the anchor and the results as the area, so a toast
+    sits in the results' corner yet stays above the setup drawer's dimming,
+    which is another child of the central widget.
 
     The bottom, not the top: the top of the results holds Export, the
     headline cards and the gel's Expand, while the bottom holds the end of a
     table, which a passing notice can cover at no cost.
     """
 
-    def __init__(self, anchor: QWidget) -> None:
+    def __init__(self, anchor: QWidget, area: QWidget | None = None) -> None:
         super().__init__(anchor)
         self.anchor = anchor
+        self.area = area or anchor
         self.toasts: list[Toast] = []
         # Everything shown, oldest first: for the log of a session and tests.
         self.history: list[tuple[str, str]] = []
         anchor.installEventFilter(self)
+        if self.area is not anchor:
+            self.area.installEventFilter(self)
 
     def show(self, kind: str, text: str,
              actions: Sequence[tuple[str, Callable[[], None]]] = (),
@@ -214,6 +223,12 @@ class ToastHost(QObject):
         self._layout()
         return t
 
+    def raise_all(self) -> None:
+        """Back on top, after a sibling (the drawer, its dimming) was raised."""
+        for t in self.toasts:
+            if not sip.isdeleted(t):
+                t.raise_()
+
     def visible(self) -> list[Toast]:
         return [t for t in self.toasts if not sip.isdeleted(t) and t.isVisible()]
 
@@ -227,22 +242,27 @@ class ToastHost(QObject):
         self._layout()
 
     def _layout(self) -> None:
-        if sip.isdeleted(self.anchor):
+        if sip.isdeleted(self.anchor) or sip.isdeleted(self.area):
             return
-        w = min(WIDTH, max(200, self.anchor.width() - 2 * MARGIN))
-        bottom = self.anchor.height() - MARGIN
+        area = self.area.rect()
+        if self.area is not self.anchor:
+            area.moveTopLeft(self.area.mapTo(self.anchor, area.topLeft()))
+        w = min(WIDTH, max(200, area.width() - 2 * MARGIN))
+        bottom = area.bottom() + 1 - MARGIN
+        right = area.right() + 1 - MARGIN
         for t in self.toasts:
             if sip.isdeleted(t):
                 continue
             t.setFixedWidth(w)
             h = t.heightForWidth(w) if t.hasHeightForWidth() else t.sizeHint().height()
             h = max(h, t.minimumSizeHint().height())
-            t.setGeometry(self.anchor.width() - w - MARGIN, bottom - h, w, h)
+            t.setGeometry(right - w, bottom - h, w, h)
             t.raise_()
             bottom -= h + 8
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
-        if obj is self.anchor and event.type() in (QEvent.Type.Resize, QEvent.Type.Show):
+        if obj in (self.anchor, self.area) and event.type() in (
+                QEvent.Type.Resize, QEvent.Type.Move, QEvent.Type.Show):
             self._layout()
         return False
 
