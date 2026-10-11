@@ -313,6 +313,9 @@ def stylesheet(t: dict[str, str], a: dict[str, str] | None = None) -> str:
 
     QFrame#strip {{ background: {t['panel']}; border-bottom: 1px solid {t['line']}; }}
     QFrame#drawer {{ background: {t['panel']}; border-bottom: 1px solid {t['line']}; }}
+    /* The drawer's scroll area shows the drawer through it. */
+    QScrollArea#drawerScroll, QScrollArea#drawerScroll > QWidget,
+    QStackedWidget#drawerStack {{ background: transparent; }}
     QFrame#tile {{ background: {t['card']}; border: 1px solid {t['line']}; border-radius: 8px; }}
     QFrame#tile:hover {{ border-color: {t['accent']}; }}
     QFrame#tile[active="true"] {{ border: 2px solid {t['accent']}; }}

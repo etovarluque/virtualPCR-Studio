@@ -171,7 +171,7 @@ class GelView(QWidget):
         self.lanes: list[Lane] = []
         self.lo, self.hi = 80, 3000
         self.setMouseTracking(True)
-        self.setMinimumHeight(220)
+        self.setMinimumHeight(140)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         self._xs: list[float] = []
 

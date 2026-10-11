@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                              QFrame, QHBoxLayout, QHeaderView, QLabel,
                              QLineEdit, QMainWindow, QMessageBox,
                              QPlainTextEdit, QProgressBar, QPushButton,
-                             QSizePolicy, QStackedWidget, QTabWidget,
+                             QScrollArea, QSizePolicy, QStackedWidget, QTabWidget,
                              QTableView, QToolButton, QVBoxLayout, QWidget)
 
 from vpcr import APP_NAME, APP_ROOT, JAR_DIR
@@ -356,8 +356,11 @@ class MainWindow(QMainWindow):
         self._drawer_stack.setCurrentWidget(page)
         # Exactly the height the form asks for: any less and the longest
         # column (Amplicon) is the one squeezed, so the columns lose their
-        # common row rhythm.
+        # common row rhythm. The visible part is capped, though, so the
+        # results always keep the larger share of a short window; past the
+        # cap the drawer scrolls rather than hiding the form's last rows.
         self._drawer_stack.setFixedHeight(page.sizeHint().height())
+        self._fit_drawer()
         self.drawer.setVisible(True)
         # Relayout now rather than on the next pass, or switching forms shows
         # one frame at the previous form's height.
@@ -540,8 +543,28 @@ class MainWindow(QMainWindow):
         self.summary_model.repaint_colors()
         self.detail_model.repaint_colors()
 
+    # Share of the window height the open drawer may take.
+    DRAWER_MAX_SHARE = 0.45
+
+    def _fit_drawer(self) -> None:
+        if self._open_section is None:
+            return
+        need = self._drawer_stack.minimumHeight()   # fixed to the form's height
+        cap = int(self.height() * self.DRAWER_MAX_SHARE)
+        # Never more than the room the results leave: past it Qt clips the
+        # drawer instead of scrolling it, and the hidden rows give no sign.
+        if (central := self.centralWidget()) is not None:
+            margins = self.drawer.layout().contentsMargins()
+            room = (central.height() - self._strip.sizeHint().height()
+                    - self._results_host.minimumSizeHint().height()
+                    - margins.top() - margins.bottom())
+            cap = min(cap, room)
+        self._drawer_scroll.setFixedHeight(max(90, min(need, cap)))
+
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
+        if hasattr(self, "_drawer_scroll"):
+            self._fit_drawer()
         self._schedule_save()
 
     def moveEvent(self, event) -> None:  # noqa: N802
@@ -636,6 +659,7 @@ class MainWindow(QMainWindow):
 
         host.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         strip = QFrame()
+        self._strip = strip
         strip.setObjectName("strip")
         strip.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         row = QHBoxLayout(strip)
@@ -646,9 +670,16 @@ class MainWindow(QMainWindow):
         self.drawer.setObjectName("drawer")
         self.drawer.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self._drawer_stack = QStackedWidget()
+        self._drawer_scroll = QScrollArea()
+        self._drawer_scroll.setObjectName("drawerScroll")
+        self._drawer_stack.setObjectName("drawerStack")
+        self._drawer_scroll.setWidget(self._drawer_stack)
+        self._drawer_scroll.setWidgetResizable(True)
+        self._drawer_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._drawer_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         dl = QVBoxLayout(self.drawer)
         dl.setContentsMargins(14, 12, 14, 14)
-        dl.addWidget(self._drawer_stack)
+        dl.addWidget(self._drawer_scroll)
         self.drawer.setVisible(False)
         self._open_section: str | None = None
         self._drawer_pages: dict[str, QWidget] = {}
@@ -739,12 +770,22 @@ class MainWindow(QMainWindow):
         return page
 
     @staticmethod
-    def _group(title: str, form: QFormLayout) -> QWidget:
+    def _group(title: str, form: QFormLayout, extra: QWidget | None = None) -> QWidget:
+        """A titled column. Every title row has one fixed height, so a button
+        beside one title does not push that column's rows out of line."""
         w = QWidget()
         v = QVBoxLayout(w)
         v.setContentsMargins(0, 0, 0, 0)
-        head = QLabel(title)
-        head.setObjectName("groupTitle")
+        head = QWidget()
+        head.setFixedHeight(30)
+        hl = QHBoxLayout(head)
+        hl.setContentsMargins(0, 0, 0, 0)
+        label = QLabel(title)
+        label.setObjectName("groupTitle")
+        hl.addWidget(label)
+        hl.addStretch(1)
+        if extra is not None:
+            hl.addWidget(extra)
         v.addWidget(head)
         v.addLayout(form)
         v.addStretch(1)
@@ -824,6 +865,7 @@ class MainWindow(QMainWindow):
         run.addRow(self.keep)
 
         self.reset_btn = QPushButton("Reset to defaults")
+        self.reset_btn.setProperty("compact", "true")
         self.reset_btn.setToolTip(_defaults_tooltip())
         self.reset_btn.clicked.connect(lambda: self.reset_parameters(confirm=True))
         self.reset_parameters()   # the widgets have no values until now
@@ -835,12 +877,10 @@ class MainWindow(QMainWindow):
         cols.setSpacing(28)
         cols.addWidget(self._group("Amplicon", amp), 1)
         cols.addWidget(self._group("Biological score", score), 1)
-        cols.addWidget(self._group("Run", run), 1)
+        # Reset sits on the title row, where it is seen before any field: at
+        # the foot of the form it was the first thing a short window hid.
+        cols.addWidget(self._group("Run", run, self.reset_btn), 1)
         lay.addLayout(cols)
-        foot = QHBoxLayout()
-        foot.addStretch(1)
-        foot.addWidget(self.reset_btn)
-        lay.addLayout(foot)
         return page
 
     def _output_page(self) -> QWidget:
@@ -908,6 +948,7 @@ class MainWindow(QMainWindow):
     def _build_results(self) -> QWidget:
         """Tabs across the full width, with the filter chips and Export above."""
         w = QWidget()
+        self._results_host = w
         lay = QVBoxLayout(w)
         lay.setContentsMargins(14, 10, 14, 10)
         lay.setSpacing(8)

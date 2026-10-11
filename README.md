@@ -90,6 +90,10 @@ engine chosen), an output folder. Its tooltip holds the full detail.
 **Click a tile** to open its form in the **drawer** under the strip; click it
 again, or another tile, to close or switch. The drawer is as tall as the open
 form and no taller, and the strip never grows, so the results keep the height.
+In a short window the drawer takes at most 45% of it, and never more than the
+results leave free; past that it scrolls, with a visible scroll bar, rather
+than letting the results cover its last rows. *Reset to defaults* sits on the
+title row of the *Run* column, so it is in view whatever the window height.
 *Parameters* lays its form out in three columns: *Amplicon*, *Biological score*
 and *Run* (which holds the JAR path). *View → … settings* opens a drawer from
 the menu too.
