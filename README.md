@@ -5,15 +5,19 @@ A desktop GUI for **virtualPCR** by Ruslan Kalendar:
 
 PyQt6 front end and Python core around the `virtualPCR` JAR (Kalendar et al.
 2024, GPLv3). It runs in silico PCR over one or more FASTA files with one or
-more primer pairs, parses the report, and exports tidy tables.
+more primer pairs, parses the report, scores every product biologically, and
+exports tidy tables, a virtual gel and a PDF report. An independent built-in
+engine can run beside the JAR as a second opinion, or instead of it where
+there is no Java.
 
-The JAR is the engine; nothing here reimplements primer binding or the
-thermodynamic model. All of the in silico PCR logic lives in the upstream
-project linked above.
+**Using the app:** download the Windows build from
+[Releases](https://github.com/etovarluque/virtual-PCR-GUI/releases) — unzip and
+run `virtualPCR Studio.exe`, no Python needed — and read the
+**[user guide](docs/USER_GUIDE.md)**. This README is the technical reference.
 
-![virtualPCR Studio](screenshot/screenshot_vpcr_gui.png)
+![virtualPCR Studio](docs/img/07_summary.png)
 
-![virtualPCR Studio, dark theme](screenshot/screenshot_vpcr_gui_dark.png)
+![virtualPCR Studio, dark theme](docs/img/17_dark_theme.png)
 
 ## Running it
 
@@ -271,6 +275,17 @@ keyboard or the arrows to set them.
   2026-08-27) is compiled for Java 26 and will not start on Java 25; the
   2026-07-08 build needed Java 25. *Help → Java / JAR info* reports both the
   JRE version and what the JAR needs.
+
+## Building the Windows release
+
+`python packaging/build.py` freezes the app with PyInstaller (`pip install
+pyinstaller`) into `dist/virtualPCR Studio/` — `virtualPCR Studio.exe` with
+`jar/`, `output/`, the licence, notice, README and `docs/` beside it — and zips
+it as `dist/virtualPCR-Studio-<version>-win64.zip`. One folder rather than one
+file, so the app starts without unpacking itself on every launch. Java is not
+bundled. In the frozen app `jar/` and `output/` are looked for beside the
+executable, no dependency is installed with pip, and Java probes run without a
+console window.
 
 ## Installing on another computer
 
