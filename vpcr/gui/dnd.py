@@ -99,15 +99,18 @@ def zone_colors(pal: QPalette, state: str) -> ZoneColors:
     the same object with different words in it. Taken from the palette so a dark
     theme keeps its contrast; the reject red is the colour no palette supplies.
 
-    Idle is the base colour a list already has, with the caption dimmed: a drop
-    target at rest should read as an empty field, not as a filled panel.
+    Idle it must still read as a place to drop things on a white drawer: a
+    border dark enough to see, a faint accent tint, and a caption in near-full
+    ink. The first version, a pale dotted line on white with a grey caption,
+    all but vanished in the light theme.
     """
     window = pal.color(QPalette.ColorRole.Window)
+    text = pal.color(QPalette.ColorRole.WindowText)
     dark = window.lightness() < 128
-    # A real grey, halfway from the text colour to the background. Not
+    # A real grey, blended from the text colour toward the background. Not
     # PlaceholderText: some styles leave it equal to the text colour, and the
     # caption then renders solid black instead of the soft grey it wants.
-    muted = _blend(pal.color(QPalette.ColorRole.WindowText), window, 0.5)
+    muted = _blend(text, window, 0.35)
 
     if state == "accept":
         border = pal.color(QPalette.ColorRole.Highlight)
@@ -117,8 +120,10 @@ def zone_colors(pal: QPalette, state: str) -> ZoneColors:
         border = QColor("#e06c6c") if dark else QColor("#c0392b")
         return ZoneColors(border, _blend(window, border, 0.14),
                           border.lighter(120) if dark else border, muted)
-    return ZoneColors(window.lighter(150) if dark else window.darker(126),
-                      pal.color(QPalette.ColorRole.Base), muted, muted)
+    accent = pal.color(QPalette.ColorRole.Highlight)
+    return ZoneColors(_blend(window, text, 0.32 if dark else 0.42),
+                      _blend(pal.color(QPalette.ColorRole.Base), accent, 0.07 if dark else 0.05),
+                      _blend(text, window, 0.15), muted)
 
 
 class ZoneCaption(QWidget):
@@ -358,7 +363,7 @@ class DropListWidget(_ZoneStyleMixin, _DropMixin, QListWidget):
         self._caption.restyle(c)
         return f"""
             QListWidget#dropList {{
-                border: 1px dashed {c.border.name()};
+                border: 2px dashed {c.border.name()};
                 border-radius: 5px;
                 background: {c.background.name()};
             }}
@@ -482,7 +487,7 @@ class DropZone(_ZoneStyleMixin, _DropMixin, QFrame):
         return f"""
             QFrame#dropZone {{
                 background: {c.background.name()};
-                border: 1px dashed {c.border.name()};
+                border: 2px dashed {c.border.name()};
                 border-radius: 5px;
             }}
         """
