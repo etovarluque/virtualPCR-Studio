@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Callable
 
 import pandas as pd
-from PyQt6.QtWidgets import (QDialog, QFileDialog, QInputDialog, QMessageBox,
+from PyQt6.QtWidgets import (QDialog, QFileDialog, QInputDialog,
                              QWidget)
 
 from vpcr.core.model import PrimerPair
@@ -18,6 +18,7 @@ from vpcr.core.primers import (PrimerConflicts, PrimerFileError,
                                find_primer_conflicts, is_fasta, load_pairs,
                                primer_set_from_pairs, read_table)
 from vpcr.gui.column_dialog import ColumnMapDialog
+from vpcr.gui.toast import notify
 
 PRIMER_FILTER = "Primer files (*.fasta *.fa *.txt *.tsv *.csv *.xlsx);;All files (*)"
 
@@ -54,7 +55,7 @@ def _ask_for_sheet(parent: QWidget, path: str) -> str | int | None:
     try:
         names = pd.ExcelFile(path).sheet_names
     except Exception as e:
-        QMessageBox.critical(parent, "Primer file", str(e))
+        notify(parent, "error", str(e), "Primer file")
         return None
     if len(names) <= 1:
         return 0
@@ -92,14 +93,14 @@ def load_pairs_interactive(
                 return None
             pairs = dlg.pairs
     except PrimerFileError as e:
-        QMessageBox.critical(parent, "Primer file", str(e))
+        notify(parent, "error", str(e), "Primer file")
         return None
     except Exception as e:
-        QMessageBox.critical(parent, "Primer file", f"{e}")
+        notify(parent, "error", f"{e}", "Primer file")
         return None
 
     if not pairs:
-        QMessageBox.warning(parent, "Primer file", "No primer pairs were loaded.")
+        notify(parent, "warning", "No primer pairs were loaded.", "Primer file")
         return None
 
     # Same sequence under two names, or one name over two sequences, is almost
@@ -108,7 +109,7 @@ def load_pairs_interactive(
     conflicts = find_primer_conflicts([*pset.forwards, *pset.reverses])
     if conflicts.any:
         message = _format_conflicts(conflicts)
-        QMessageBox.warning(parent, "Primer file", message)
+        notify(parent, "warning", message, "Primer file")
         if log is not None:
             log(f"WARNING — {Path(path).name}: {message}")
     return pairs

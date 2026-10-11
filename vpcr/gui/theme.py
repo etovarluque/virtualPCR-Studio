@@ -311,6 +311,36 @@ def stylesheet(t: dict[str, str], a: dict[str, str] | None = None) -> str:
                   border-color: {t['accent']}; image: url({a.get('check', '')}); }}
     QListWidget {{ padding: 2px; }}
 
+    /* Segmented control (3' mismatches): joined buttons, as tall as an input. */
+    QPushButton[segment] {{ background: {t['card']}; color: {t['muted']}; border: 1px solid {t['line']};
+                  border-radius: 0; padding: 3px 0; min-width: 34px; min-height: 22px;
+                  max-height: 22px; }}
+    QPushButton[segment="mid"], QPushButton[segment="last"] {{ border-left: none; }}
+    QPushButton[segment="first"] {{ border-top-left-radius: 6px; border-bottom-left-radius: 6px; }}
+    QPushButton[segment="last"] {{ border-top-right-radius: 6px; border-bottom-right-radius: 6px; }}
+    QPushButton[segment]:hover {{ color: {t['ink']}; background: {t['chip']}; }}
+    QPushButton[segment]:checked {{ background: {t['accent']}; color: {t['accent_ink']};
+                  border-color: {t['accent']}; font-weight: 600; }}
+    QPushButton[segment]:disabled {{ color: {t['muted']}; background: {t['bg']}; }}
+    SegmentedControl[focused="true"] QPushButton[segment]:checked {{ border: 2px solid {t['ink']}; }}
+
+    /* The navigation rail; its buttons paint themselves from the tokens. */
+    QFrame#rail {{ background: {t['panel']}; border-right: 1px solid {t['line']}; }}
+    QLabel#pageTitle {{ font-size: 14px; font-weight: 600; color: {t['ink']}; }}
+
+    /* Toasts: a tinted card per kind, with the next step as a button. */
+    QFrame#toast {{ border: 1px solid {t['line']}; border-radius: 8px; background: {t['card']}; }}
+    QFrame#toast[kind="success"] {{ background: {t['good_bg']}; border-color: {t['good']}; }}
+    QFrame#toast[kind="info"] {{ background: {t['accent_soft']}; border-color: {t['accent']}; }}
+    QFrame#toast[kind="warning"] {{ background: {t['warn_bg']}; border-color: {t['warn']}; }}
+    QFrame#toast[kind="error"] {{ background: {t['bad_bg']}; border-color: {t['bad']}; }}
+    QLabel#toastText {{ color: {t['ink']}; background: transparent; }}
+    QToolButton#toastClose {{ border: none; background: transparent; color: {t['muted']};
+                  padding: 0 4px; font-size: 11px; }}
+    QToolButton#toastClose:hover {{ color: {t['ink']}; }}
+    QPushButton[toastAction="true"] {{ background: {t['card']}; padding: 2px 10px;
+                  font-weight: 600; }}
+
     QFrame#strip {{ background: {t['panel']}; border-bottom: 1px solid {t['line']}; }}
     QFrame#drawer {{ background: {t['panel']}; border-bottom: 1px solid {t['line']}; }}
     /* The drawer's scroll area shows the drawer through it. */
@@ -369,8 +399,12 @@ def apply(app: QApplication, new_mode: str | None = None) -> str:
         _mode = new_mode if new_mode in MODES else "system"
     _scheme = _system_scheme() if _mode == "system" else _mode
     t = TOKENS[_scheme]
-    if app.style().name().lower() != "fusion":
+    # Once a style sheet is set, style().name() reads '' rather than 'fusion',
+    # so a name check would reinstall Fusion, and restyle every widget, on
+    # each switch. A flag on the application remembers it is done.
+    if not app.property("vpcrFusion"):
         app.setStyle(QStyleFactory.create("Fusion"))
+        app.setProperty("vpcrFusion", True)
     app.setPalette(_palette(t))
     app.setStyleSheet(stylesheet(t, _assets(t, _scheme)))
     bus().changed.emit(_scheme)

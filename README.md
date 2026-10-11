@@ -66,21 +66,33 @@ vpcr_app/
       column_dialog.py  manual column mapping for primer tables
       dnd.py            drag-and-drop file widgets, including the drop zone
       setup_strip.py    the setup tiles and the filter chips
-      summary_view.py   the Summary tab: headline cards and the virtual gel
+      summary_view.py   the Summary view: headline cards and the virtual gel
+      nav_rail.py       the navigation rail down the left edge
+      toast.py          toasts: notices in the corner of the results
       theme.py          light and dark themes, from one set of colour tokens
-      widgets.py        spin boxes and combos that ignore the mouse wheel
+      widgets.py        spin boxes and combos that ignore the mouse wheel,
+                        and the segmented control
 ```
 
 ## The window
 
-Setup runs across the top, results fill the rest:
+A rail down the left edge chooses the view, setup runs across the top, and
+results fill the rest:
 
 ```
-┌ TARGETS ✓ ──────┐┌ PRIMERS ✓ ─────┐┌ PARAMETERS ✓ ────────┐┌ OUTPUT ✓ ──────┐ ▶ Run in silico PCR
-│ 2 FASTA files   ││ 7 of 10 pairs  ││ 90–2200 bp · 1 mm    ││ ensayo COI     │   14 jobs   Cancel
-│ mito.fasta +1   ││ 6 F · 10 R     ││ circular · OneTaq ·… ││ auto-export    │   ━━━━━━━━━━━━━━
-└─────────────────┘└────────────────┘└──────────────────────┘└────────────────┘
- Summary │ Detail │ Alignment │ Primer map │ Log                   Export Excel + CSV
+┌──────┐┌ TARGETS ✓ ─────┐┌ PRIMERS ✓ ─────┐┌ PARAMETERS ✓ ───────┐┌ OUTPUT ✓ ─────┐ ▶ Run in silico PCR
+│ ▦  4 ││ 2 FASTA files  ││ 7 of 10 pairs  ││ 90–2200 bp · 1 mm   ││ ensayo COI    │   14 jobs   Cancel
+│Summ. ││ mito.fasta +1  ││ 6 F · 10 R     ││ circular · OneTaq ·…││ auto-export   │   ━━━━━━━━━━━━━━
+│ ☰ 497│└────────────────┘└────────────────┘└─────────────────────┘└───────────────┘
+│Detail│ Summary                                                         Export Excel + CSV
+│ ≡    │ ┌ results of the chosen view ───────────────────────────────────────────────────┐
+│Align │ │                                                                               │
+│ ⊟    │ │                                              ┌ ✓ Exported to 12S_20261010… ✕ ┐ │
+│Map   │ │                                              │   Open folder                 │ │
+│ ▤  1 │ │                                              └───────────────────────────────┘ │
+│Log   │ └───────────────────────────────────────────────────────────────────────────────┘
+│  ☾   │
+└──────┘
 ```
 
 Each **tile** summarises its section and shows a ✓ once that section is ready
@@ -105,8 +117,23 @@ and in red for one it cannot take. The drop zones inside the drawers still work.
 **Run** sits at the end of the strip with the job count (pairs × files, doubled
 when comparing engines), Cancel and the progress bar, always in view.
 
-The Detail filters are chips on the Detail tab; *Export* sits on the tab bar,
-since it writes every table.
+**The rail** lists the views: *Summary*, *Detail*, *Align* (Alignment), *Map*
+(Primer map) and *Log*; Ctrl+1 … Ctrl+5 open them from the keyboard. Its badges
+count what each holds after a run: pair/file rows on *Summary*, detail rows on
+*Detail*, and, in red on *Log*, failed jobs or a failed run, until the Log is
+opened. The view's name heads the results, with *Export* beside it, since it
+writes every table. The Detail filters are chips on the Detail view.
+
+**Notices are toasts**, not message boxes. They appear in the bottom-right
+corner of the results, where they cover the end of a table rather than the
+headline numbers, and they carry the next step as a button: *Open folder* after
+an export, *Show log* when jobs fail, *View/Select primers* after a file loads.
+Successes and information leave after five seconds, warnings after nine;
+errors, and the warning about failed jobs, stay until closed so a partial
+result is never missed. Hovering a toast holds it. A missing input also opens
+the form that fixes it: *Run* with no targets opens the Targets drawer, with
+no JAR the Parameters drawer. Message boxes remain for what needs an answer —
+quitting during a run — and inside the primer windows, which are modal.
 
 **Summary at a glance.** Above the summary table, four cards: how many
 sequences were searched (once per file, however many pairs), the best pair and
@@ -127,7 +154,7 @@ new run. There, **−** / **+** / **Fit**, Ctrl + wheel or Ctrl +/− zoom the g
 bp apart separate into distinct bands, with finer ticks on the axis; and
 **Copy** / **Save PNG…** take the gel into a report as it is shown.
 
-**Light and dark.** The button at the right of the menu bar switches theme;
+**Light and dark.** The button at the foot of the rail switches theme;
 *View → Theme* also offers *Follow Windows*, the default, which tracks the
 Windows app setting live. Every colour comes from one set of tokens in
 `gui/theme.py` — the Qt palette, the style sheet, the result-table highlights
@@ -141,9 +168,12 @@ shutdown. Minimum window size is 900 × 560.
 
 ## Parameter defaults
 
-*Parameters* ends in **Reset to defaults**, disabled while nothing has changed
-and asking for confirmation when something has. Its tooltip lists the values it
-would restore; the tile appends `modified` while any of them differs.
+*Parameters* carries **Reset to defaults**, disabled while nothing has changed.
+It resets at once and offers **Undo** in a toast, rather than asking first. Its
+tooltip lists the values it restores; the tile appends `modified` while any of
+them differs. *3' mismatches* is a segmented control, 0 – 3: every choice in
+view, one click, and nothing for a passing mouse wheel to change. (The CLI's
+`--errors3` takes any value.)
 
 The defaults live in one place, `PARAM_DEFAULTS` in `gui/main_window.py`, and
 the widgets are built empty and filled from it — so the button cannot drift from

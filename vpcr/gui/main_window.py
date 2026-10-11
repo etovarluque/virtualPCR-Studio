@@ -1,8 +1,10 @@
 """PyQt6 front end for in silico PCR.
 
-Layout: a strip of setup tiles across the top (targets, primers, parameters,
-output, and Run), a drawer under it that opens the clicked tile's form, and
-the results across the full width below. The JAR runs in a worker thread; the
+Layout: a navigation rail down the left edge (the results views, and the
+theme toggle at its foot), a strip of setup tiles across the top (targets,
+primers, parameters, output, and Run), a drawer under it that opens the
+clicked tile's form, and the results below. News goes to toasts in the corner
+of the results (gui/toast.py); message boxes are kept for questions. The JAR runs in a worker thread; the
 batch itself is parallel, so the GUI thread only marshals progress.
 
 Choosing primers happens in its own window (gui/primer_dialog.py), so the
@@ -21,8 +23,8 @@ from typing import Callable, NamedTuple
 import pandas as pd
 from PyQt6 import sip
 from PyQt6.QtCore import (QAbstractTableModel, QModelIndex, QSettings, QSize, Qt,
-                          QThread, QTimer, pyqtSignal)
-from PyQt6.QtGui import QAction, QActionGroup
+                          QThread, QTimer, QUrl, pyqtSignal)
+from PyQt6.QtGui import QAction, QActionGroup, QDesktopServices, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                              QComboBox, QDialog, QFileDialog, QFormLayout,
                              QFrame, QHBoxLayout, QHeaderView, QLabel,
@@ -41,9 +43,11 @@ from vpcr.gui.dnd import (FASTA_DIR_SUFFIXES, FASTA_SUFFIXES, JAR_SUFFIXES,
 from vpcr.gui.primer_dialog import PrimerDialog, PrimerState
 from vpcr.gui.primer_io import load_pairs_interactive
 from vpcr.gui.setup_strip import ChipBar, SetupTile
+from vpcr.gui.nav_rail import NavRail, compact_count
 from vpcr.gui.summary_view import SummaryPage
+from vpcr.gui.toast import ToastHost
 from vpcr.gui.widgets import (NoWheelComboBox, NoWheelDoubleSpinBox,
-                             NoWheelSpinBox)
+                             NoWheelSpinBox, SegmentedControl)
 from vpcr.core.export import (EXCEL_ROW_LIMIT, detail_table, export_run,
                               run_folder_name, summary_table, unique_dir,
                               write_tables)
@@ -53,6 +57,15 @@ from vpcr.core.runner import (JarError, discover_javas, jar_class_version,
                               run_batch, select_java)
 from vpcr.core.scoring import (DEFAULT_POLYMERASE, POLYMERASES, Reaction,
                                resolve_ta)
+
+# The results views, in tab order: rail key, rail label, page title, tooltip.
+VIEWS = (
+    ("summary", "Summary", "Summary", "Headline numbers, one row per pair and file, and the virtual gel"),
+    ("detail", "Detail", "Detail", "One row per sequence and product, with filters"),
+    ("align", "Align", "Alignment", "Primers drawn on the amplified region of a sequence"),
+    ("map", "Map", "Primer map", "Every primer's footprint on a chosen target"),
+    ("log", "Log", "Log", "What each run did, as archived in run_log.txt"),
+)
 
 # The target list in its drawer: five rows, then it scrolls.
 TARGET_LIST_HEIGHT = 140
@@ -167,15 +180,28 @@ _CALL_TOKENS = {"strong": "good_bg", "probable": "good_bg2",
 # ---------------------------------------------------------------------------
 
 class DataFrameModel(QAbstractTableModel):
-    """Read-only view over a DataFrame; cheap for large result sets."""
+    """Read-only view over a DataFrame; cheap for large result sets.
+
+    Cells are read from a NumPy copy made once per table, not through
+    `df.iat`: a view sized to its contents asks for every cell, in several
+    roles, whenever the style changes, and at ~20 µs a pandas lookup a theme
+    switch on a few hundred rows took fifteen seconds.
+    """
+
+    _ROLES = (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.BackgroundRole)
 
     def __init__(self, df: pd.DataFrame | None = None) -> None:
         super().__init__()
-        self._df = df if df is not None else pd.DataFrame()
+        self._set(df if df is not None else pd.DataFrame())
+
+    def _set(self, df: pd.DataFrame) -> None:
+        self._df = df
+        self._values = df.to_numpy(dtype=object)
+        self._token_cols = {i: c for i, c in enumerate(df.columns) if c in ("amplified", "call")}
 
     def set_dataframe(self, df: pd.DataFrame) -> None:
         self.beginResetModel()
-        self._df = df
+        self._set(df)
         self.endResetModel()
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
@@ -185,9 +211,9 @@ class DataFrameModel(QAbstractTableModel):
         return 0 if parent.isValid() else len(self._df.columns)
 
     def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
-        if not index.isValid():
+        if role not in self._ROLES or not index.isValid():
             return None
-        value = self._df.iat[index.row(), index.column()]
+        value = self._values[index.row(), index.column()]
         if role == Qt.ItemDataRole.DisplayRole:
             if pd.isna(value):
                 return ""
@@ -200,7 +226,9 @@ class DataFrameModel(QAbstractTableModel):
         return None
 
     def _cell_token(self, column: int, value) -> str | None:
-        col = self._df.columns[column]
+        col = self._token_cols.get(column)
+        if col is None:
+            return None
         if col == "amplified":
             return "good_bg" if bool(value) else "bad_bg"
         if col == "call":
@@ -287,13 +315,20 @@ class MainWindow(QMainWindow):
         theme.bus().changed.connect(self._on_theme_changed)
 
         central = QWidget()
-        lay = QVBoxLayout(central)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(0)
-        lay.addWidget(self._build_setup())
-        lay.addWidget(self._build_results(), 1)
+        outer = QHBoxLayout(central)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        column = QVBoxLayout()
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(0)
+        column.addWidget(self._build_setup())
+        column.addWidget(self._build_results(), 1)
+        outer.addWidget(self._build_rail())
+        outer.addLayout(column, 1)
         self.setCentralWidget(central)
         self.setMinimumSize(900, 560)
+        # Notices land in the corner of the results, clear of the Run button.
+        self.toasts = ToastHost(self._results_host)
 
         self._build_menu()
         self._autodetect_jar()
@@ -315,15 +350,21 @@ class MainWindow(QMainWindow):
         return w.value()
 
     def reset_parameters(self, confirm: bool = False) -> None:
-        """Restore every Parameters widget to PARAM_DEFAULTS."""
+        """Restore every Parameters widget to PARAM_DEFAULTS.
+
+        From the button (`confirm`), the values replaced are kept and a toast
+        offers Undo: cheaper than asking first, and a slip costs one click.
+        """
         if confirm and not self.parameters_are_default():
-            answer = QMessageBox.question(
-                self, APP_NAME, "Restore all parameters to their default values?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes)
-            if answer != QMessageBox.StandardButton.Yes:
-                return
-        for key, value in PARAM_DEFAULTS.items():
+            before = {k: self._param_value(k) for k in PARAM_DEFAULTS}
+            self._set_parameters(PARAM_DEFAULTS)
+            self.toasts.show("info", "Parameters restored to their defaults.",
+                             [("Undo", lambda: self._set_parameters(before))])
+            return
+        self._set_parameters(PARAM_DEFAULTS)
+
+    def _set_parameters(self, values: dict[str, object]) -> None:
+        for key, value in values.items():
             w = getattr(self, key)
             if isinstance(w, QCheckBox):
                 w.setChecked(bool(value))
@@ -637,17 +678,7 @@ class MainWindow(QMainWindow):
         a.triggered.connect(self.show_env)
         h.addAction(a)
 
-        # The theme toggle sits at the right end of the menu bar.
-        self.theme_btn = QToolButton()
-        self.theme_btn.setObjectName("themeToggle")
-        self.theme_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.theme_btn.setIconSize(QSize(16, 16))
-        self.theme_btn.clicked.connect(self.toggle_theme)
-        corner = QWidget()
-        cl = QHBoxLayout(corner)
-        cl.setContentsMargins(0, 2, 8, 2)
-        cl.addWidget(self.theme_btn)
-        self.menuBar().setCornerWidget(corner, Qt.Corner.TopRightCorner)
+        # The theme toggle itself sits at the foot of the rail.
         self._on_theme_changed(theme.scheme())
 
     def _build_setup(self) -> QWidget:
@@ -799,7 +830,10 @@ class MainWindow(QMainWindow):
         """
         self.min_len = NoWheelSpinBox(); self.min_len.setRange(20, 50000)
         self.max_len = NoWheelSpinBox(); self.max_len.setRange(20, 50000)
-        self.err3 = NoWheelSpinBox(); self.err3.setRange(0, 10)
+        self.err3 = SegmentedControl(
+            (0, 1, 2, 3), tips=[f"Allow {n} mismatch{'es' if n != 1 else ''} in the "
+                                f"primers' 3' end" for n in range(4)])
+        self.err3.setToolTip("Mismatches allowed in the 3' end of each primer")
         self.workers = NoWheelSpinBox(); self.workers.setRange(1, 32)
         self.heap = NoWheelComboBox(); self.heap.addItems(["", "2g", "4g", "8g", "16g"])
         self.circular = QCheckBox("Circular template")
@@ -965,6 +999,10 @@ class MainWindow(QMainWindow):
             view.setAlternatingRowColors(True)
             view.horizontalHeader().setSectionResizeMode(
                 QHeaderView.ResizeMode.ResizeToContents)
+            # Columns are sized from a sample of rows, not all of them: the
+            # widths settle within a hundred rows, and every style change
+            # (a theme switch) measures them again.
+            view.horizontalHeader().setResizeContentsPrecision(150)
             views.append(view)
         self.summary_view = views[0]
         # Headline numbers and the virtual gel around the summary table.
@@ -1001,19 +1039,52 @@ class MainWindow(QMainWindow):
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.tabs.addTab(self.log, "Log")
-        lay.addWidget(self.tabs, 1)
+        # The rail chooses the view, so the tab bar would only repeat it.
+        self.tabs.tabBar().hide()
+        self.tabs.currentChanged.connect(self._on_view_changed)
 
-        # Export applies to every tab, so it sits on the tab bar itself.
+        # The view's name, and Export, which applies to every view.
+        head = QHBoxLayout()
+        head.setContentsMargins(2, 0, 0, 0)
+        self.page_title = QLabel(VIEWS[0][2])
+        self.page_title.setObjectName("pageTitle")
+        head.addWidget(self.page_title)
+        head.addStretch(1)
         self.export_btn = QPushButton("Export Excel + CSV")
         self.export_btn.setProperty("compact", "true")
         self.export_btn.setEnabled(False)
         self.export_btn.clicked.connect(self.export_results)
-        corner = QWidget()
-        cl = QHBoxLayout(corner)
-        cl.setContentsMargins(0, 0, 0, 3)
-        cl.addWidget(self.export_btn)
-        self.tabs.setCornerWidget(corner, Qt.Corner.TopRightCorner)
+        head.addWidget(self.export_btn)
+        lay.addLayout(head)
+        lay.addWidget(self.tabs, 1)
         return w
+
+    def _build_rail(self) -> QWidget:
+        """The rail: one button per view, Ctrl+1..5, and the theme toggle."""
+        self.rail = NavRail([(key, label, f"{tip}  (Ctrl+{i})")
+                             for i, (key, label, _t, tip) in enumerate(VIEWS, 1)])
+        self.rail.currentChanged.connect(self.tabs.setCurrentIndex)
+        for i in range(len(VIEWS)):
+            QShortcut(QKeySequence(f"Ctrl+{i + 1}"), self,
+                      activated=lambda i=i: self.tabs.setCurrentIndex(i))
+        self.theme_btn = QToolButton()
+        self.theme_btn.setObjectName("themeToggle")
+        self.theme_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.theme_btn.setIconSize(QSize(18, 18))
+        self.theme_btn.setFixedSize(40, 36)
+        self.theme_btn.clicked.connect(self.toggle_theme)
+        self.rail.add_bottom(self.theme_btn)
+        return self.rail
+
+    def _on_view_changed(self, i: int) -> None:
+        self.rail.set_current(i)
+        self.page_title.setText(VIEWS[i][2])
+        # The Log badge counts problems not yet seen; seeing them clears it.
+        if VIEWS[i][0] == "log":
+            self.rail.set_badge("log")
+
+    def show_view(self, key: str) -> None:
+        self.tabs.setCurrentIndex([v[0] for v in VIEWS].index(key))
 
     def _select_summary_row(self, pair: str, engine: str) -> None:
         """A click on a gel lane selects that pair's row in the table."""
@@ -1143,6 +1214,11 @@ class MainWindow(QMainWindow):
         self._log(f"Loaded {len(state.forwards)} forward and {len(state.reverses)} "
                   f"reverse primer(s) from {path or 'file'}, paired as in the file "
                   f"({len(pairs)} pair(s))")
+        source = f" from {Path(path).name}" if path else ""
+        self.toasts.show("success", f"Loaded {len(state.forwards)} forward and "
+                         f"{len(state.reverses)} reverse primers{source}, "
+                         f"{len(pairs)} pair{'s' if len(pairs) != 1 else ''}.",
+                         [("View/Select primers", self.manage_primers)])
 
     def clear_primers(self) -> None:
         """Forget the loaded file, so a different one can be dropped."""
@@ -1190,25 +1266,30 @@ class MainWindow(QMainWindow):
         pairs = self.collect_pairs()
 
         engine = self.engine.currentData() or "jar"
-        if engine != "thermo" and (not jar or not Path(jar).exists()):
-            QMessageBox.warning(self, APP_NAME, "Select a valid virtualPCR.jar, "
-                                "or choose the built-in engine."); return
-        if not targets:
-            QMessageBox.warning(self, APP_NAME, "Add at least one FASTA target."); return
-        if not pairs:
-            QMessageBox.warning(self, APP_NAME, "Add at least one primer pair."); return
-        if self.min_len.value() > self.max_len.value():
-            QMessageBox.warning(self, APP_NAME, "Min amplicon length exceeds max."); return
+        # Each problem opens the form that fixes it, and says so in a toast.
+        problem = (
+            ("parameters", "Select a valid virtualPCR.jar, or choose the built-in engine.")
+            if engine != "thermo" and (not jar or not Path(jar).exists()) else
+            ("targets", "Add at least one FASTA target.") if not targets else
+            ("primers", "Add at least one primer pair.") if not pairs else
+            ("parameters", "Min amplicon length exceeds max.")
+            if self.min_len.value() > self.max_len.value() else None)
+        if problem is not None:
+            self.open_section(problem[0])
+            self.toasts.show("warning", problem[1])
+            return
 
         # The JAR silently discards primers shorter than this and then fails
         # with 'Failed to open primer's file', which explains nothing.
         short = [f"{p.name}: {p.forward} / {p.reverse}" for p in pairs
                  if min(len(p.forward), len(p.reverse)) < MIN_PRIMER_LEN]
         if short:
-            QMessageBox.warning(
-                self, APP_NAME,
+            more = f"\n…and {len(short) - 3} more" if len(short) > 3 else ""
+            self.toasts.show(
+                "warning",
                 f"These primers are shorter than {MIN_PRIMER_LEN} nt and cannot "
-                f"be searched:\n\n" + "\n".join(short))
+                f"be searched:\n" + "\n".join(short[:3]) + more,
+                [("View/Select primers", self.manage_primers)])
             return
 
         ta = self.fixed_ta.value()
@@ -1243,6 +1324,8 @@ class MainWindow(QMainWindow):
         self.alignment_tab.set_results([])
         self.primer_map_tab.set_results([])
         self.summary_page.set_results(None, [])
+        for key in ("summary", "detail", "log"):
+            self.rail.set_badge(key)
         self.tabs.setCurrentIndex(self.tabs.indexOf(self.log))
 
         # The log is archived next to the results, so it records the run.
@@ -1313,13 +1396,15 @@ class MainWindow(QMainWindow):
             return
         total = getattr(results, "total", len(results))
         shown = "\n".join(f"• {p} / {t}: {m.splitlines()[0] if m else ''}"
-                          for p, t, m in errors[:8])
-        more = f"\n…and {len(errors) - 8} more" if len(errors) > 8 else ""
-        QMessageBox.warning(
-            self, APP_NAME,
+                          for p, t, m in errors[:3])
+        more = f"\n…and {len(errors) - 3} more" if len(errors) > 3 else ""
+        self.rail.set_badge("log", str(len(errors)), "bad")
+        # Stays until closed: a partial result must not pass unnoticed.
+        self.toasts.show(
+            "warning",
             f"{len(errors)} of {total} job(s) failed and are missing from the "
-            f"results:\n\n{shown}{more}\n\nThe full messages are in the Log tab "
-            f"and in run_log.txt.")
+            f"results:\n{shown}{more}",
+            [("Show log", lambda: self.show_view("log"))], timeout=0)
 
     def on_finished(self, results: list) -> None:
         self.results = results
@@ -1350,6 +1435,8 @@ class MainWindow(QMainWindow):
             self._apply_detail_filter()
             self.export_btn.setEnabled(True)
             self.tabs.setCurrentIndex(0)
+            self.rail.set_badge("summary", compact_count(len(summary)))
+            self.rail.set_badge("detail", compact_count(len(detail)))
             multiband = int((summary["n_multiband"]).sum())
             multi = int((summary["n_multi_amplicon"]).sum())
             self._log(f"Done. {len(summary)} pair/file combination(s), {len(detail)} detail rows. "
@@ -1371,7 +1458,7 @@ class MainWindow(QMainWindow):
                           "use Export results to save the finished jobs.")
             elif self.auto_export.isChecked():
                 with self._busy("Exporting results…"):
-                    outdir = self._export(quiet=True, outdir=self._run_outdir)
+                    outdir = self._export(outdir=self._run_outdir)
                 if outdir:
                     self.statusBar().showMessage(f"Exported to {outdir}")
             self._warn_failed_jobs(results)
@@ -1381,15 +1468,17 @@ class MainWindow(QMainWindow):
             self._log("OUT OF MEMORY while building the result tables. The run itself "
                       "finished; try fewer pairs/targets per run or turn off "
                       "'Extract amplicon sequences'.")
-            QMessageBox.critical(
-                self, APP_NAME,
-                "Ran out of memory building the result tables.\n\n"
-                "The run finished, but the result set is too large to display here. "
-                "Split the targets across smaller runs, or turn off "
-                "'Extract amplicon sequences', then run again.")
+            self.toasts.show(
+                "error",
+                "Ran out of memory building the result tables. The run finished, "
+                "but the result set is too large to display here. Split the targets "
+                "across smaller runs, or turn off 'Extract amplicon sequences'.")
         except Exception as e:
             self._log(f"ERROR building results: {e}\n{traceback.format_exc()}")
-            QMessageBox.critical(self, "Results failed", str(e).splitlines()[0] if str(e) else repr(e))
+            self.rail.set_badge("log", "!", "bad")
+            self.toasts.show("error", "Results failed: "
+                             + (str(e).splitlines()[0] if str(e) else repr(e)),
+                             [("Show log", lambda: self.show_view("log"))])
         finally:
             # Whatever happened, the window must be usable again.
             self.run_btn.setEnabled(True)
@@ -1398,7 +1487,9 @@ class MainWindow(QMainWindow):
         self.run_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self._log(f"FAILED: {msg}")
-        QMessageBox.critical(self, "Run failed", msg.splitlines()[0])
+        self.rail.set_badge("log", "!", "bad")
+        self.toasts.show("error", f"Run failed: {msg.splitlines()[0] if msg else ''}",
+                         [("Show log", lambda: self.show_view("log"))])
 
     def pick_output_dir(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "Output folder", self.out_edit.text())
@@ -1408,7 +1499,7 @@ class MainWindow(QMainWindow):
     def _output_base(self) -> Path:
         return Path(self.out_edit.text().strip() or (APP_ROOT / "output"))
 
-    def _export(self, quiet: bool = False, outdir: Path | None = None) -> Path | None:
+    def _export(self, outdir: Path | None = None) -> Path | None:
         """Write the current results into the run's folder, or a fresh one.
 
         `outdir` is the folder chosen at run start (shared with the .out
@@ -1430,12 +1521,11 @@ class MainWindow(QMainWindow):
         except PermissionError as e:
             # The usual cause is the workbook still open in Excel.
             self._log(f"EXPORT FAILED: {e}")
-            QMessageBox.critical(self, "Export failed",
-                                 f"{e}\n\nIs the workbook open in Excel?")
+            self.toasts.show("error", f"Export failed: {e}\nIs the workbook open in Excel?")
             return None
         except Exception as e:
             self._log(f"EXPORT FAILED: {e}")
-            QMessageBox.critical(self, "Export failed", str(e))
+            self.toasts.show("error", f"Export failed: {e}")
             return None
 
         self._log(f"Exported to {outdir}")
@@ -1448,16 +1538,18 @@ class MainWindow(QMainWindow):
         # The log file was written before these lines existed; refresh it.
         if "log" in paths:
             paths["log"].write_text(self.log.toPlainText(), encoding="utf-8")
-        if not quiet:
-            note = ("" if not skipped_xlsx else
-                    f"\n\nExcel skipped: over {EXCEL_ROW_LIMIT:,} rows. "
-                    f"The full table is in detail.csv.")
-            QMessageBox.information(self, APP_NAME, f"Exported to:\n{outdir}{note}")
+        note = ("" if not skipped_xlsx else
+                f"\nExcel skipped: over {EXCEL_ROW_LIMIT:,} rows; the full table "
+                f"is in detail.csv.")
+        folder = outdir
+        self.toasts.show("success", f"Exported to {outdir.name}{note}",
+                         [("Open folder",
+                           lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder))))])
         return outdir
 
     def export_results(self) -> None:
         if not self.results:
-            QMessageBox.information(self, APP_NAME, "Nothing to export yet."); return
+            self.toasts.show("info", "Nothing to export yet: run first."); return
         # The run's folder is reused while it holds no tables yet (auto-export
         # off, raw .out reports kept), so the export lands beside the reports.
         # Once it has tables, a manual export gets a fresh folder rather than
