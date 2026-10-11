@@ -192,6 +192,7 @@ class SiteScore:
     mismatches: str      # "3'+0 A.G; 3'+7 T.C" (primer.template), 3' end first
     n_mismatches: int
     degeneracy: int
+    tm: float | None = None  # C, this variant on this site, at the buffer's salt
 
 
 def _align(primer: str, site: str) -> tuple[str, str, list[tuple[int, str, str]]]:
@@ -199,9 +200,10 @@ def _align(primer: str, site: str) -> tuple[str, str, list[tuple[int, str, str]]
 
     `site` is written like the primer: the sequence a perfect primer would
     have. Returns the variant, the site with ambiguous bases resolved, and
-    (distance from 3' end, primer base, template base) per mismatch. Ambiguous template bases count as a match when the
-    primer can pair with any of their readings: an N in a mitogenome is a gap
-    in the sequencing, not evidence of a mismatch.
+    (distance from 3' end, primer base, template base) per mismatch.
+    Ambiguous template bases count as a match when the primer can pair with
+    any of their readings: an N in a mitogenome is a gap in the sequencing,
+    not evidence of a mismatch.
     """
     L = len(primer)
     variant: list[str] = []
@@ -232,30 +234,36 @@ def _extension(mism: list[tuple[int, str, str]], tolerance: float) -> float:
     return ext
 
 
-@lru_cache(maxsize=200_000)
-def _dg(variant: str, template: str, ta: float, polymerase: str) -> float:
-    """Duplex dG (kcal/mol) at `ta` of `variant` on `template` (5'->3')."""
+def _duplex(variant: str, template: str, ta: float, polymerase: str) -> tuple[float, float | None]:
+    """Duplex dG (kcal/mol) at `ta`, and Tm, of `variant` on `template` (5'->3')."""
     import primer3
     p = POLYMERASES[polymerase]
     r = primer3.calc_heterodimer(variant, template, mv_conc=p.mv_mM, dv_conc=p.dv_mM,
                                  dntp_conc=p.dntp_mM, dna_conc=p.primer_nM, temp_c=ta)
-    return r.dg / 1000.0 if r.structure_found else 0.0
+    if not r.structure_found:
+        return 0.0, None
+    return r.dg / 1000.0, round(r.tm, 1)
 
 
+@lru_cache(maxsize=200_000)
 def score_site(primer: str, site: str, ta: float,
                polymerase: str = DEFAULT_POLYMERASE) -> SiteScore:
-    """Score one binding site. `site` is written 5'->3' like the primer."""
+    """Score one binding site. `site` is written 5'->3' like the primer.
+
+    Cached: across a set of related genomes the same site recurs thousands of
+    times, and the thermodynamics are the expensive part.
+    """
     prof = POLYMERASES[polymerase]
     variant, resolved, mism = _align(primer, site)
     D = degeneracy(primer)
     # The primer anneals to the strand complementary to the site.
-    dg = _dg(variant, revcomp(resolved), round(ta, 2), polymerase)
+    dg, tm = _duplex(variant, revcomp(resolved), round(ta, 2), polymerase)
     conc = prof.primer_nM * 1e-9 / D
     x = (dg * 1000.0) / (R_CAL * (ta + 273.15)) - math.log(conc)
     bound = 0.0 if x > 700 else 1.0 / (1.0 + math.exp(x))
     ext = _extension(mism, prof.mismatch_tolerance)
     text = "; ".join(f"3'+{d} {pb}.{tb}" for d, pb, tb in sorted(mism))
-    return SiteScore(round(dg, 2), bound, ext, bound * ext, text, len(mism), D)
+    return SiteScore(round(dg, 2), bound, ext, bound * ext, text, len(mism), D, tm)
 
 
 def delta_cq(f: SiteScore, r: SiteScore) -> float:

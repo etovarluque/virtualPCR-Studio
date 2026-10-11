@@ -57,6 +57,18 @@ TARGET_LIST_HEIGHT = 115
 # own Ta from the primer file, else its lower Tm plus the polymerase's offset.
 TA_AUTO = 39.0
 
+# Engine choices: label shown, run_batch's key, and what each one is for.
+ENGINE_CHOICES = (
+    ("virtualPCR JAR", "jar",
+     "The JAR's in silico PCR, with the biological score on top."),
+    ("Built-in (thermodynamic)", "thermo",
+     "An independent engine: seed-and-extend search scored by duplex\n"
+     "thermodynamics and 3' mismatches. Needs no Java."),
+    ("Both (compare)", "both",
+     "Runs every pair through both engines and writes\n"
+     "engine_comparison.csv; filter Detail on 'Engines disagree'."),
+)
+
 # The single source of truth for the Parameters section: the widgets are built
 # empty and filled from here, so "Reset to defaults" cannot drift from what the
 # app starts with. The run parameters come from STUDIO_DEFAULTS, which the CLI
@@ -68,6 +80,7 @@ PARAM_DEFAULTS: dict[str, object] = {
     "workers": STUDIO_DEFAULTS["workers"],
     "heap": "",
     "circular": STUDIO_DEFAULTS["circular"],
+    "engine": ENGINE_CHOICES[0][0],
     "polymerase": POLYMERASES[DEFAULT_POLYMERASE].label,
     "fixed_ta": TA_AUTO,
     "probe": False,
@@ -80,7 +93,7 @@ _PARAM_LABELS = {
     "workers": "Parallel jobs", "heap": "JVM heap", "circular": "Circular template",
     "probe": "Probe search", "seqext": "Extract amplicon sequences",
     "keep": "Keep raw .out reports",
-    "polymerase": "Polymerase", "fixed_ta": "Annealing Ta",
+    "engine": "Engine", "polymerase": "Polymerase", "fixed_ta": "Annealing Ta",
 }
 
 
@@ -129,6 +142,10 @@ DETAIL_FILTERS: tuple[DetailFilter, ...] = (
                  lambda d: d[_col(d, "call").isin(["strong", "probable"])]),
     DetailFilter("Doubtful (weak or unlikely)",
                  lambda d: d[_col(d, "call").isin(["weak", "unlikely"])]),
+    # Compared with == False, not via _col: a missing value must not count.
+    DetailFilter("Engines disagree",
+                 lambda d: d[d["engines_agree"] == False] if "engines_agree" in d  # noqa: E712
+                 else d.iloc[0:0]),
 )
 
 # Background per call: green to red, light enough for black text.
@@ -195,23 +212,25 @@ class RunWorker(QThread):
     failed = pyqtSignal(str)
 
     def __init__(self, pairs, targets, jar, config, workers, heap, reports_dir,
-                 reaction=None):
+                 reaction=None, engine="jar"):
         super().__init__()
-        self._args = (pairs, targets, jar, config, workers, heap, reports_dir, reaction)
+        self._args = (pairs, targets, jar, config, workers, heap, reports_dir,
+                      reaction, engine)
         self._cancel = False
 
     def cancel(self) -> None:
         self._cancel = True
 
     def run(self) -> None:
-        pairs, targets, jar, config, workers, heap, reports_dir, reaction = self._args
+        (pairs, targets, jar, config, workers, heap, reports_dir,
+         reaction, engine) = self._args
         try:
             results = run_batch(
                 pairs, targets, jar, config,
                 workers=workers, heap=heap or None, reports_dir=reports_dir,
                 progress=lambda d, t, l: self.progress.emit(d, t, l),
                 should_cancel=lambda: self._cancel,
-                reaction=reaction,
+                reaction=reaction, engine=engine,
             )
             self.finished_ok.emit(results)
         except Exception as e:
@@ -313,6 +332,7 @@ class MainWindow(QMainWindow):
             w.valueChanged.connect(refresh)
         self.heap.currentTextChanged.connect(refresh)
         self.polymerase.currentTextChanged.connect(refresh)
+        self.engine.currentTextChanged.connect(refresh)
         self.fixed_ta.valueChanged.connect(refresh)
         for w in (self.circular, self.probe, self.seqext, self.keep):
             w.toggled.connect(refresh)
@@ -384,6 +404,9 @@ class MainWindow(QMainWindow):
                 "circular" if self.circular.isChecked() else "linear"]
         if self.probe.isChecked():
             bits.append("probe")
+        if self.engine.currentData() != "jar":
+            bits.append({"thermo": "built-in", "both": "JAR + built-in"}[
+                self.engine.currentData()])
         bits.append(self.polymerase.currentText().split(" (")[0])
         if self.fixed_ta.value() != TA_AUTO:
             bits.append(f"Ta {self.fixed_ta.value():g} °C")
@@ -626,6 +649,13 @@ class MainWindow(QMainWindow):
             "View/Select primers table), else its lower primer Tm - 5 °C\n"
             "(+3 °C for high-fidelity polymerases).\n"
             "A value here applies to pairs that have no Ta of their own.")
+        self.engine = NoWheelComboBox()
+        for label, key, tip in ENGINE_CHOICES:
+            self.engine.addItem(label, key)
+            self.engine.setItemData(self.engine.count() - 1, tip,
+                                    Qt.ItemDataRole.ToolTipRole)
+        self.engine.setToolTip("What predicts the products. 'Both' compares them.")
+        form.addRow("Engine", self.engine)
         form.addRow("Polymerase", self.polymerase)
         form.addRow("Annealing Ta", self.fixed_ta)
         form.addRow(self.circular)
@@ -922,8 +952,10 @@ class MainWindow(QMainWindow):
         targets = self.target_list.paths()
         pairs = self.collect_pairs()
 
-        if not jar or not Path(jar).exists():
-            QMessageBox.warning(self, APP_NAME, "Select a valid virtualPCR.jar."); return
+        engine = self.engine.currentData() or "jar"
+        if engine != "thermo" and (not jar or not Path(jar).exists()):
+            QMessageBox.warning(self, APP_NAME, "Select a valid virtualPCR.jar, "
+                                "or choose the built-in engine."); return
         if not targets:
             QMessageBox.warning(self, APP_NAME, "Add at least one FASTA target."); return
         if not pairs:
@@ -966,7 +998,7 @@ class MainWindow(QMainWindow):
         if reports is not None:
             self._log(f"Raw .out reports: {reports}")
 
-        self.progress.setRange(0, len(pairs) * len(targets))
+        self.progress.setRange(0, len(pairs) * len(targets) * (2 if engine == "both" else 1))
         self.progress.setValue(0)
         self.run_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
@@ -990,6 +1022,8 @@ class MainWindow(QMainWindow):
                 self._log(f"Target    : {t}")
         else:
             self._log(f"Targets   : {len(targets)} files")
+        if engine != "jar":
+            self._log(f"Engine    : {self.engine.currentText()}")
         self._log(f"Score     : {reaction.profile.label}")
         if len(pairs) <= 50:
             for p in pairs:
@@ -1005,7 +1039,7 @@ class MainWindow(QMainWindow):
 
         self.worker = RunWorker(pairs, targets, jar, cfg,
                                 self.workers.value(), self.heap.currentText(), reports,
-                                reaction)
+                                reaction, engine)
         self.worker.progress.connect(self.on_progress)
         self.worker.finished_ok.connect(self.on_finished)
         self.worker.failed.connect(self.on_failed)
@@ -1081,6 +1115,11 @@ class MainWindow(QMainWindow):
             multi = int((summary["n_multi_amplicon"]).sum())
             self._log(f"Done. {len(summary)} pair/file combination(s), {len(detail)} detail rows. "
                       f"{multi} sequence(s) with >1 product, {multiband} with >1 distinct size.")
+            if "pct_engine_agreement" in summary:
+                agree = summary.drop_duplicates(["pair", "target_file"])
+                for r in agree.itertuples(index=False):
+                    self._log(f"Engines agree on {r.pct_engine_agreement:g}% of sequences "
+                              f"for {r.pair} / {r.target_file}")
             self.statusBar().showMessage("Cancelled — partial results" if cancelled
                                          else "Done, with failed jobs" if incomplete
                                          else "Done")

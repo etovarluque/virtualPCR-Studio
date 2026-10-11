@@ -83,10 +83,14 @@ def detail_table(
     include_sequence: bool = True,
     include_silent: bool = True,
 ) -> pd.DataFrame:
+    results = list(results)
+    tag_engine = _shows_engine(results)
     rows: list[dict[str, object]] = []
     for res in results:
         scored = res.score_ta is not None
         base = {"pair": res.pair.name, "target_file": Path(res.target_file).name}
+        if tag_engine:
+            base["engine"] = res.engine
         for seq in res.sequences:
             hdr = {"header": seq.header, **_split_header(seq.header, header_fields, header_sep)}
             if not seq.amplicons:
@@ -121,10 +125,91 @@ def detail_table(
                              "amplified": False, "n_amplicons": 0,
                              "n_forward_hits": 0, "n_reverse_hits": 0})
     df = pd.DataFrame(rows)
+    comp = comparison_table(results)
+    if comp is not None and not comp.empty and not df.empty:
+        # Each detail row learns whether the engines agree on its sequence.
+        agree = {(r.pair, r.target_file, r.header): r.engines_agree
+                 for r in comp.itertuples(index=False)}
+        df["engines_agree"] = [agree.get(k) for k in
+                               zip(df["pair"], df["target_file"], df["header"])]
     return df
 
 
+def _shows_engine(results: Sequence[PairResult]) -> bool:
+    """Whether to name the engine: only once anything but the JAR is involved,
+    so a JAR-only run keeps the columns it always had."""
+    return any(r.engine != "jar" for r in results)
+
+
+def _predicted(seq: SequenceResult | None) -> bool:
+    """A sequence the engine expects to amplify. For a scored product that
+    means 'weak' or better; the JAR's own unscored call is taken as given."""
+    if seq is None or not seq.amplicons:
+        return False
+    calls = [a.call for a in seq.amplicons if a.call]
+    return not calls or any(c != "unlikely" for c in calls)
+
+
+def comparison_table(results: Iterable[PairResult]) -> pd.DataFrame | None:
+    """One row per sequence and pair: what each engine predicted, side by side.
+
+    None unless both the JAR and the built-in engine ran. `agreement` is
+    'both', 'neither', 'jar only' or 'thermo only'; the last two are the cases
+    worth a closer look. A header repeated in the FASTA is matched by order.
+    """
+    results = list(results)
+    if {r.engine for r in results} != {"jar", "thermo"}:
+        return None
+    by_job: dict[tuple[str, str], dict[str, PairResult]] = {}
+    for r in results:
+        by_job.setdefault((r.pair.name, Path(r.target_file).name), {})[r.engine] = r
+
+    def entries(res: PairResult) -> dict[str, list[SequenceResult | None]]:
+        out: dict[str, list[SequenceResult | None]] = {}
+        for s in res.sequences:
+            out.setdefault(s.header, []).append(s)
+        for h in res.silent_headers:
+            out.setdefault(h, []).append(None)
+        return out
+
+    def sizes(seq: SequenceResult | None) -> str:
+        return ";".join(str(x) for x in sorted({a.size for a in seq.amplicons})) if seq else ""
+
+    rows = []
+    for (pair, target), eng in by_job.items():
+        if set(eng) != {"jar", "thermo"}:
+            continue        # one engine failed for this job: nothing to compare
+        jar, thermo = entries(eng["jar"]), entries(eng["thermo"])
+        for header in dict.fromkeys([*jar, *thermo]):
+            js, ts = jar.get(header, []), thermo.get(header, [])
+            for k in range(max(len(js), len(ts))):
+                j = js[k] if k < len(js) else None
+                t = ts[k] if k < len(ts) else None
+                jp, tp = _predicted(j), _predicted(t)
+                best_j = best_amplicon(j) if j else None
+                best_t = best_amplicon(t) if t else None
+                rows.append({
+                    "pair": pair, "target_file": target, "header": header,
+                    "jar_amplified": jp, "jar_sizes": sizes(j),
+                    "jar_call": best_j.call if best_j else None,
+                    "thermo_amplified": tp, "thermo_sizes": sizes(t),
+                    "thermo_call": best_t.call if best_t else None,
+                    "thermo_delta_cq": best_t.delta_cq if best_t else None,
+                    "agreement": ("both" if jp and tp else "neither" if not (jp or tp)
+                                  else "jar only" if jp else "thermo only"),
+                    "engines_agree": jp == tp,
+                })
+    return pd.DataFrame(rows)
+
+
 def summary_table(results: Iterable[PairResult]) -> pd.DataFrame:
+    results = list(results)
+    tag_engine = _shows_engine(results)
+    comp = comparison_table(results)
+    agreement: dict[tuple[str, str], float] = {}
+    if comp is not None and not comp.empty:
+        for (pair, target), g in comp.groupby(["pair", "target_file"]):
+            agreement[(pair, target)] = round(100 * g["engines_agree"].mean(), 2)
     rows = []
     for res in results:
         n_seen = len(res.sequences)
@@ -137,6 +222,7 @@ def summary_table(results: Iterable[PairResult]) -> pd.DataFrame:
         multi_amplicon = sum(1 for s in amplified if s.total_amplicons > 1)
         multiband = sum(1 for s in amplified if s.unique_sizes > 1)
         row: dict[str, object] = {
+            **({"engine": res.engine} if tag_engine else {}),
             "pair": res.pair.name,
             "forward": res.pair.forward,
             "reverse": res.pair.reverse,
@@ -165,10 +251,21 @@ def summary_table(results: Iterable[PairResult]) -> pd.DataFrame:
                 **{f"n_{c}": calls[c] for c in CALLS},
                 "pct_likely": round(100 * likely / n_total, 2) if n_total else 0.0,
             })
+        if agreement:
+            row["pct_engine_agreement"] = agreement.get(
+                (res.pair.name, Path(res.target_file).name))
         rows.append(row)
     if not rows:   # e.g. a run cancelled before any job finished
         return pd.DataFrame()
-    return pd.DataFrame(rows).sort_values("pct_amplified", ascending=False, ignore_index=True)
+    df = pd.DataFrame(rows)
+    if tag_engine:
+        # A pair's engines stay adjacent; pairs ordered by the best of them.
+        best = df.groupby(["pair", "target_file"])["pct_amplified"].transform("max")
+        return (df.assign(_best=best)
+                  .sort_values(["_best", "pair", "target_file", "engine"],
+                               ascending=[False, True, True, True], ignore_index=True)
+                  .drop(columns="_best"))
+    return df.sort_values("pct_amplified", ascending=False, ignore_index=True)
 
 
 def write_excel(
@@ -176,6 +273,7 @@ def write_excel(
     summary: pd.DataFrame,
     detail: pd.DataFrame | None = None,
     max_detail_rows: int = 1_000_000,
+    comparison: pd.DataFrame | None = None,
 ) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -183,6 +281,9 @@ def write_excel(
         summary.to_excel(xl, sheet_name="Summary", index=False)
         if detail is not None and not detail.empty:
             detail.head(max_detail_rows).to_excel(xl, sheet_name="Detail", index=False)
+        if comparison is not None and not comparison.empty:
+            comparison.head(max_detail_rows).to_excel(xl, sheet_name="Engine comparison",
+                                                      index=False)
         for name in xl.sheets:
             ws = xl.sheets[name]
             for col in ws.columns:
@@ -268,9 +369,13 @@ def write_tables(
     }
     summary.to_csv(paths["summary_csv"], index=False)
     detail.to_csv(paths["detail_csv"], index=False)
+    comparison = comparison_table(results)
+    if comparison is not None:
+        paths["comparison_csv"] = outdir / "engine_comparison.csv"
+        comparison.to_csv(paths["comparison_csv"], index=False)
     if len(detail) <= xlsx_row_limit:
         paths["xlsx"] = outdir / "vpcr_results.xlsx"
-        write_excel(paths["xlsx"], summary, detail)
+        write_excel(paths["xlsx"], summary, detail, comparison=comparison)
     if log_text:
         paths["log"] = outdir / "run_log.txt"
         paths["log"].write_text(log_text, encoding="utf-8")

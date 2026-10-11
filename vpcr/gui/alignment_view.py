@@ -352,10 +352,13 @@ class AlignmentTab(QWidget):
 
         total = len(self._seq_entries)
         shown = self._seq_entries[:SEQ_COMBO_CAP]
+        # With both engines, a sequence appears once per engine: say which.
+        tag = len({r.engine for r, _ in self._seq_entries}) > 1
         self.seq_combo.blockSignals(True)
         self.seq_combo.clear()
         for r, s in shown:
-            self.seq_combo.addItem(f"{Path(r.target_file).name} ▸ {s.header}")
+            lead = f"[{'JAR' if r.engine == 'jar' else 'built-in'}] " if tag else ""
+            self.seq_combo.addItem(f"{lead}{Path(r.target_file).name} ▸ {s.header}")
         self.seq_combo.blockSignals(False)
 
         if total > SEQ_COMBO_CAP:

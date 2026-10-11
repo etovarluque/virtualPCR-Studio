@@ -56,6 +56,7 @@ vpcr_app/
       parser.py         reading .out reports
       export.py         summary / detail tables, Excel + CSV
       scoring.py        biological score of each predicted amplicon
+      thermo_engine.py  the built-in engine, independent of the JAR
     gui/
       main_window.py    the application
       primer_dialog.py  the Manage primers window, and the primer state it edits
@@ -388,6 +389,40 @@ thermodynamics are standard, but the extension weights are literature-informed
 starting values, not yet calibrated. Calibrating them against the lab's own
 PCR outcomes (which primer pair amplified which species) is what will turn the
 score into a prediction with a known error rate.
+
+## Two engines
+
+*Parameters → Engine* (CLI: `--engine`) chooses what predicts the products:
+
+| Engine | What it is |
+|---|---|
+| **virtualPCR JAR** (default) | the upstream engine, scored as above |
+| **Built-in (thermodynamic)** | an independent search in Python; needs no Java |
+| **Both (compare)** | every pair through both, side by side |
+
+The built-in engine looks for sites the way a polymerase sees them, from the
+3' end: two exact 7-nt seeds (the 3'-terminal seven bases, and the seven before
+them), then the whole primer, IUPAC on both sides, up to 6 mismatches. Every
+site is scored as in *Biological score*, and any top-strand site facing any
+bottom-strand site within the size range is a product — the same primer on both
+ends included, and across the origin of a circular template. Products are
+reported down to *weak*; *unlikely* ones are left out, so *amplified* means
+"expected to give a product". A site with mismatches in both seeds is not found;
+it would hardly prime anyway. It takes about 50 s per pair over 13,500
+mitogenomes.
+
+**Both** is the point of having two. Where they agree, a prediction rests on two
+methods; where they do not, look closer. The run adds:
+
+* `engine_comparison.csv` (and a sheet in the workbook): one row per sequence
+  and pair, what each engine predicted, sizes, the built-in call and delay,
+  and `agreement` — `both`, `neither`, `jar only` or `thermo only`;
+* an `engine` column in the tables, and `pct_engine_agreement` per pair;
+* *Detail rows → Engines disagree*; the Alignment tab labels each entry
+  `[JAR]` or `[built-in]`.
+
+Agreement is not proof: two engines can share a blind spot. Calibration
+against lab results is still what makes either one trustworthy.
 
 ## Quirks the core compensates for
 

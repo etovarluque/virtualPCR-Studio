@@ -26,6 +26,11 @@ from .model import PairResult, PrimerPair, RunConfig
 from .parser import fasta_headers, finalize, parse_report
 from .primers import write_pair_fasta
 from .scoring import Reaction, score_result
+from .thermo_engine import run_thermo
+
+# 'jar' runs virtualPCR, 'thermo' the built-in engine, 'both' runs each pair
+# through both so their predictions can be compared.
+ENGINES = ("jar", "thermo", "both")
 
 # Java class file major version -> feature release (45 == Java 1.1)
 _CLASS_MAJOR_BASE = 44
@@ -238,6 +243,7 @@ def _link_or_copy(src: Path, dst: Path) -> None:
 class RunTask:
     pair: PrimerPair
     target: Path
+    engine: str = "jar"
 
 
 def _safe(name: str) -> str:
@@ -327,7 +333,7 @@ def run_one(
 def run_batch(
     pairs: Iterable[PrimerPair],
     targets: Iterable[str | Path],
-    jar: str | Path,
+    jar: str | Path | None,
     config: RunConfig | None = None,
     *,
     java_path: str | None = None,
@@ -338,6 +344,7 @@ def run_batch(
     progress: Callable[[int, int, str], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
     reaction: Reaction | None = None,
+    engine: str = "jar",
 ) -> BatchResults:
     """Run every pair against every target file, in parallel.
 
@@ -348,13 +355,27 @@ def run_batch(
 
     With a `reaction`, every predicted amplicon is also scored biologically
     (see scoring.py); without one, the results are the JAR's alone.
+
+    `engine` picks what predicts the products (see ENGINES). The built-in
+    engine always scores, with `reaction` or the default one, and needs
+    neither Java nor the JAR. With 'both', each pair yields two results,
+    told apart by PairResult.engine.
     """
-    # Resolved: workers run the JAR with cwd set to a temp dir, so any relative
-    # path given by the caller would be interpreted against the wrong directory.
-    jar = Path(jar).resolve()
-    if not jar.exists():
-        raise JarError(f"JAR not found: {jar}")
-    java = select_java(jar, java_path)
+    if engine not in ENGINES:
+        raise ValueError(f"engine must be one of {ENGINES}, not {engine!r}")
+    engines = ["jar", "thermo"] if engine == "both" else [engine]
+    if "thermo" in engines and reaction is None:
+        reaction = Reaction()
+    java = None
+    if "jar" in engines:
+        if jar is None:
+            raise JarError("no JAR given")
+        # Resolved: workers run the JAR with cwd set to a temp dir, so a
+        # relative path would be interpreted against the wrong directory.
+        jar = Path(jar).resolve()
+        if not jar.exists():
+            raise JarError(f"JAR not found: {jar}")
+        java = select_java(jar, java_path)
     config = config or RunConfig()
 
     targets = [Path(t).resolve() for t in targets]
@@ -371,8 +392,9 @@ def run_batch(
             raise JarError("scoring needs the primer3-py package: "
                            "pip install primer3-py") from e
 
-    header_cache = {t: fasta_headers(t) for t in targets}
-    tasks = [RunTask(p, t) for t in targets for p in pairs]
+    header_cache = {t: fasta_headers(t) for t in targets} if "jar" in engines else {}
+    # Engines adjacent per pair, so a pair's two results sit side by side.
+    tasks = [RunTask(p, t, e) for t in targets for p in pairs for e in engines]
     total = len(tasks)
     reports_dir = Path(reports_dir) if reports_dir else None
     # One reports subfolder per target. Two targets can share a stem when they
@@ -395,12 +417,16 @@ def run_batch(
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         futures = {}
         for i, t in enumerate(tasks):
-            keep = (reports_dir / report_folder[t.target] / f"{_safe(t.pair.name)}.out"
-                    if reports_dir else None)
-            futures[pool.submit(
-                run_one, t, jar, java, config, heap, keep, header_cache[t.target],
-                repair, processes, reaction,
-            )] = (i, t)
+            if t.engine == "thermo":
+                fut = pool.submit(run_thermo, t.pair, t.target, config, reaction,
+                                  lambda: processes.cancelled)
+            else:
+                keep = (reports_dir / report_folder[t.target] / f"{_safe(t.pair.name)}.out"
+                        if reports_dir else None)
+                fut = pool.submit(
+                    run_one, t, jar, java, config, heap, keep, header_cache[t.target],
+                    repair, processes, reaction)
+            futures[fut] = (i, t)
 
         # Polled rather than blocked on as_completed: a single JAR run can take
         # minutes, and a cancel has to act while it is still going.
@@ -425,12 +451,14 @@ def run_batch(
                     continue
                 except Exception as e:  # one bad pair must not kill the batch
                     done += 1
-                    errors.append((t.pair.name, t.target.name, str(e)))
+                    where = f"{t.target.name} [{t.engine}]" if len(engines) > 1 else t.target.name
+                    errors.append((t.pair.name, where, str(e)))
                     if progress:
-                        progress(done, total, f"ERROR {t.pair.name} / {t.target.name}: {e}")
+                        progress(done, total, f"ERROR {t.pair.name} / {where}: {e}")
                     continue
                 done += 1
                 if progress:
-                    progress(done, total, f"{t.pair.name} / {t.target.name}")
+                    tag = f" [{t.engine}]" if len(engines) > 1 or t.engine != "jar" else ""
+                    progress(done, total, f"{t.pair.name} / {t.target.name}{tag}")
     return BatchResults((collected[i] for i in sorted(collected)), total=total,
                         errors=errors, cancelled=cancelled)

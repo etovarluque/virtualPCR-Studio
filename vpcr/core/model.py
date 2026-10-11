@@ -196,6 +196,8 @@ class PairResult:
     score_ta: float | None = None
     score_ta_source: str = ""
     score_polymerase: str = ""
+    # Which engine produced it: 'jar' (virtualPCR) or 'thermo' (built-in).
+    engine: str = "jar"
 
     @property
     def n_amplified(self) -> int:

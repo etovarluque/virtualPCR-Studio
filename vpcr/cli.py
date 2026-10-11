@@ -15,7 +15,7 @@ from vpcr import JAR_DIR
 from vpcr.core.export import export_run, write_tables
 from vpcr.core.model import STUDIO_DEFAULTS, RunConfig
 from vpcr.core.primers import combine, load_pairs, primer_set_from_pairs
-from vpcr.core.runner import JarError, run_batch
+from vpcr.core.runner import ENGINES, JarError, run_batch
 from vpcr.core.scoring import DEFAULT_POLYMERASE, POLYMERASES, Reaction, resolve_ta
 
 
@@ -70,6 +70,10 @@ def main(argv: list[str] | None = None) -> int:
                          "Tm plus the polymerase's offset)")
     ap.add_argument("--no-score", action="store_true",
                     help="report the JAR's predictions only, without the biological score")
+    ap.add_argument("--engine", choices=ENGINES, default="jar",
+                    help="jar: virtualPCR (default); thermo: the built-in engine, "
+                         "no Java needed; both: run both and write "
+                         "engine_comparison.csv")
     ap.add_argument("--java", default=None)
     ap.add_argument("--header-fields", default=None,
                     help="comma-separated names to split the FASTA header into, "
@@ -77,7 +81,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--header-sep", default="|")
     args = ap.parse_args(argv)
 
-    if args.jar is None:
+    if args.no_score and args.engine != "jar":
+        print("error: the built-in engine always scores; --no-score needs --engine jar",
+              file=sys.stderr)
+        return 2
+    if args.jar is None and args.engine != "thermo":
         args.jar = _default_jar()
         if args.jar is None:
             print(f"error: no .jar in {JAR_DIR}; pass --jar", file=sys.stderr)
@@ -113,7 +121,10 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     say(f"virtualPCR run — {datetime.now():%Y-%m-%d %H:%M:%S}")
-    say(f"JAR       : {args.jar}")
+    if args.engine != "thermo":
+        say(f"JAR       : {args.jar}")
+    if args.engine != "jar":
+        say(f"Engine    : {args.engine}")
     say(f"Amplicon  : {cfg.min_len}-{cfg.max_len} bp, 3' mismatches {cfg.n_3prime_errors}")
     say(f"Template  : {'circular' if cfg.circular else 'linear'}"
         f"{', probe search' if cfg.probe else ''}")
@@ -135,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
             ta = f"  Ta {t:g} C ({src})"
         say(f"Primer    : {p.name}  {p.forward} / {p.reverse}{ta}")
 
-    total = len(pairs) * len(args.targets)
+    total = len(pairs) * len(args.targets) * (2 if args.engine == "both" else 1)
     t0 = time.time()
 
     def progress(done: int, n: int, label: str) -> None:
@@ -148,6 +159,7 @@ def main(argv: list[str] | None = None) -> int:
             java_path=args.java, workers=args.workers, heap=args.heap,
             reports_dir=(args.out / "reports") if args.keep_reports else None,
             repair=not args.no_repair, progress=progress, reaction=reaction,
+            engine=args.engine,
         )
     except JarError as e:
         print(f"error: {e}", file=sys.stderr)
