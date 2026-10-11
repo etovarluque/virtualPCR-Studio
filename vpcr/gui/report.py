@@ -29,6 +29,10 @@ PAGE = QPageSize.PageSizeId.Letter
 # is narrow, across the page with the key below when many lanes widen it.
 _GEL_SIDE_W, _GEL_FULL_W = 250, 640
 _GEL_H = 380
+# More lanes than a comb holds: the gel moves to the end of the report, cast
+# as several gels of at most this many lanes, each with its own ladder.
+LANES_PER_GEL = 20
+_GEL_PART_H = 500
 _SCALE = 3          # rendered at 3x for print
 
 _CSS = """
@@ -70,19 +74,20 @@ def _num(v) -> bool:
     return v is not None and v == v      # not None, not NaN
 
 
-def gel_image(lanes: list[Lane], width_cap: int) -> tuple[QImage, int, int]:
-    """The gel at print resolution, and its size on the page."""
+def gel_image(lanes: list[Lane], number_from: int = 1, zoom: float | None = None,
+              height: int = _GEL_H) -> tuple[QImage, QSize]:
+    """The gel at print resolution, and its natural size (document px)."""
     gel = GelView()
+    gel.number_from = number_from
     gel.set_lanes(lanes)
-    gel.set_zoom(1.8 if len(lanes) <= 6 else 1.2)
-    size = QSize(gel.sizeHint().width(), _GEL_H)
+    gel.set_zoom(zoom or (1.8 if len(lanes) <= 6 else 1.2))
+    size = QSize(gel.sizeHint().width(), height)
     gel.resize(size)
     img = QImage(size * _SCALE, QImage.Format.Format_ARGB32)
     img.setDevicePixelRatio(_SCALE)
     img.fill(Qt.GlobalColor.transparent)
     gel.render(img)
-    w = min(size.width(), width_cap)
-    return img, w, round(size.height() * w / size.width())
+    return img, size
 
 
 def _jar_lines(jar: str) -> list[tuple[str, str]]:
@@ -99,7 +104,18 @@ def _jar_lines(jar: str) -> list[tuple[str, str]]:
             ("Self-test", test)]
 
 
-def build_html(results: list[PairResult], info: RunInfo) -> tuple[str, QImage | None]:
+def split_gels(lanes: list[Lane], per_gel: int = LANES_PER_GEL) -> list[list[Lane]]:
+    """Lanes cut into gels of at most `per_gel`, never parting a pair's engines."""
+    gels: list[list[Lane]] = [[]]
+    for pair in dict.fromkeys(ln.pair for ln in lanes):
+        mine = [ln for ln in lanes if ln.pair == pair]
+        if gels[-1] and len(gels[-1]) + len(mine) > per_gel:
+            gels.append([])
+        gels[-1].extend(mine)
+    return [g for g in gels if g]
+
+
+def build_html(results: list[PairResult], info: RunInfo) -> tuple[str, dict[str, QImage]]:
     summary = summary_table(results)
     lanes = gel_lanes(results)
     both = len({ln.engine for ln in lanes}) > 1
@@ -121,7 +137,7 @@ def build_html(results: list[PairResult], info: RunInfo) -> tuple[str, QImage | 
 
     if summary.empty:
         H.append("<p>No results.</p></body></html>")
-        return "".join(H), None
+        return "".join(H), {}
 
     H.append("<h2>Overview</h2><table width='100%'><tr>")
     for k in kpis(summary, results):
@@ -132,11 +148,7 @@ def build_html(results: list[PairResult], info: RunInfo) -> tuple[str, QImage | 
 
     # The gel and its key.
     names = list(dict.fromkeys(ln.pair for ln in lanes))
-    img, w, h = gel_image(lanes, _GEL_FULL_W)
-    # Beside the key while shrinking it to fit keeps the lanes readable.
-    side = w <= 1.4 * _GEL_SIDE_W and len(names) <= 12
-    if side:
-        w, h = min(w, _GEL_SIDE_W), round(h * min(w, _GEL_SIDE_W) / w)
+    images: dict[str, QImage] = {}
     key = ["<table class='grid'><tr><th>Lane</th><th>Pair</th>"
            f"<th>Amplify{' (JAR / built-in)' if both else ''}</th>"
            "<th>Main sizes (bp)</th></tr>"]
@@ -153,13 +165,45 @@ def build_html(results: list[PairResult], info: RunInfo) -> tuple[str, QImage | 
                "faint band is a minority product. Sizes are predicted, not measured: the "
                "gel shows what the templates allow, not how well each band would "
                "amplify.</p>")
-    gel = f"<img src='gel.png' width='{w}' height='{h}'>"
-    H.append("<h2>Virtual gel</h2>")
-    if side:
-        H.append(f"<table width='100%'><tr><td width='{w + 12}' valign='top'>{gel}</td>"
-                 f"<td valign='top'>{''.join(key)}</td></tr></table>")
+    gel_at_end = len(lanes) > LANES_PER_GEL
+    end: list[str] = []
+    if gel_at_end:
+        # Too many lanes for one readable gel: the tables come first, and the
+        # gel closes the report, cast as several gels with their key.
+        parts = split_gels(lanes)
+        H.append(f"<h2>Virtual gel</h2><p class='note'>{len(lanes)} lanes: the gel is at "
+                 f"the end of the report, in {len(parts)} parts of up to {LANES_PER_GEL} "
+                 "lanes.</p>")
+        end.append("<h2 style='page-break-before: always'>Virtual gel</h2>")
+        # One lane width, height and scale for every part, as gels cast alike.
+        first, cast = 1, []
+        for part in parts:
+            cast.append((first, part, *gel_image(part, first, zoom=1.2, height=_GEL_PART_H)))
+            first += len(dict.fromkeys(ln.pair for ln in part))
+        f = min(1.0, _GEL_FULL_W / max(size.width() for *_, size in cast))
+        for i, (first, part, img, size) in enumerate(cast):
+            images[f"gel{i}.png"] = img
+            last = first + len(dict.fromkeys(ln.pair for ln in part)) - 1
+            end.append(f"<p class='sub'>Lanes {first}–{last}</p>"
+                       f"<p style='margin-bottom: 12px'><img src='gel{i}.png' "
+                       f"width='{round(size.width() * f)}' height='{round(size.height() * f)}'></p>")
+        end.append("".join(key))
     else:
-        H.append(f"<p style='margin-bottom: 10px'>{gel}</p>{''.join(key)}")
+        img, size = gel_image(lanes)
+        images["gel0.png"] = img
+        w = min(size.width(), _GEL_FULL_W)
+        h = round(size.height() * w / size.width())
+        # Beside the key while shrinking it to fit keeps the lanes readable.
+        side = w <= 1.4 * _GEL_SIDE_W and len(names) <= 12
+        if side:
+            w, h = min(w, _GEL_SIDE_W), round(h * min(w, _GEL_SIDE_W) / w)
+        gel = f"<img src='gel0.png' width='{w}' height='{h}'>"
+        H.append("<h2>Virtual gel</h2>")
+        if side:
+            H.append(f"<table width='100%'><tr><td width='{w + 12}' valign='top'>{gel}</td>"
+                     f"<td valign='top'>{''.join(key)}</td></tr></table>")
+        else:
+            H.append(f"<p style='margin-bottom: 10px'>{gel}</p>{''.join(key)}")
 
     # Result per pair.
     one_file = summary["target_file"].nunique() == 1
@@ -229,19 +273,21 @@ def build_html(results: list[PairResult], info: RunInfo) -> tuple[str, QImage | 
                      "origin (see the user guide).")
     notes.append("Full tables: summary.csv, detail.csv and vpcr_results.xlsx in the run "
                  "folder, when the run was exported.")
-    H.append(f"<p class='note'>{' '.join(notes)}</p></body></html>")
-    return "".join(H), img
+    H.append(f"<p class='note'>{' '.join(notes)}</p>")
+    H.extend(end)
+    H.append("</body></html>")
+    return "".join(H), images
 
 
 def write_report(path: str | Path, results: list[PairResult], info: RunInfo) -> Path:
     """Write the PDF report for `results` to `path`; returns the path."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    body, img = build_html(results, info)
+    body, images = build_html(results, info)
     doc = QTextDocument()
     doc.setDefaultFont(QFont("Segoe UI", 9))
-    if img is not None:
-        doc.addResource(QTextDocument.ResourceType.ImageResource, QUrl("gel.png"), img)
+    for name, img in images.items():
+        doc.addResource(QTextDocument.ResourceType.ImageResource, QUrl(name), img)
     doc.setHtml(body)
     writer = QPdfWriter(str(path))
     # No margins here: QTextDocument.print adds its own 2 cm, and page numbers.

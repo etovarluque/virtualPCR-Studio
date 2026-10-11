@@ -174,9 +174,12 @@ on a transilluminator.
 
 **Expand** (or a double click on the gel) opens it in a window of its own,
 which can be resized, maximised or moved to a second screen, and follows every
-new run. There, **−** / **+** / **Fit**, Ctrl + wheel or Ctrl +/− zoom the gel;
-**Size range** shows only a window of sizes (say 85–200 bp), so variants a few
-bp apart separate into distinct bands, with finer ticks on the axis; and
+new run. It opens with the whole gel in view. **−** / **+**, Ctrl + wheel or
+Ctrl +/− zoom it as an image viewer does — lanes, bands, ladder and labels
+grow together, with scroll bars once it outgrows the window — and **Fit**
+brings it back to the window's size. To pull apart bands a few bp apart, use
+**Size range** instead: it shows only a window of sizes (say 85–200 bp),
+so the variants separate into distinct bands, with finer ticks on the axis; and
 **Copy** / **Save PNG…** take the gel into a report as it is shown.
 
 **Light and dark.** The button at the foot of the rail switches theme;
@@ -680,7 +683,12 @@ wherever you choose. It is meant to be filed or shared without the app:
 * the headline numbers of the Summary tab;
 * the **virtual gel** at print resolution, with a key giving each lane's pair,
   the share of sequences that amplify and its main sizes (beside the gel when
-  it is narrow, across the page when many pairs widen it);
+  it is narrow, across the page when many pairs widen it). A lane is a primer
+  pair, not a sample: every sequence of the run shows in that lane, as band
+  brightness. With more than 20 lanes — many pairs, or both engines — the gel
+  moves to the end of the report, after the tables, cast as several gels of
+  up to 20 lanes with their own ladder, all at one scale and numbered on
+  from one to the next;
 * the result per pair: sequences, amplified, likely, sequences with more than
   one band size, size median and range, Ta, and the engines' agreement when
   both ran;

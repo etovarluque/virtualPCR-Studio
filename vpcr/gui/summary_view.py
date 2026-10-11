@@ -10,7 +10,8 @@ species spread into a short smear, as they would.
 
 The gel is drawn dark in both themes, like a gel on a transilluminator.
 The panel copy is small; Expand (or a double click) opens it in a window of its
-own, with zoom, a size range to resolve close bands, and Copy / Save as PNG.
+own, with a zoom that magnifies the whole gel, a size range to resolve close
+bands, and Copy / Save as PNG.
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ from dataclasses import dataclass, field
 from statistics import median
 
 import pandas as pd
-from PyQt6.QtCore import QRectF, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QKeySequence, QPainter, QPainterPath, QShortcut
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QDialog, QFileDialog, QFrame,
                              QHBoxLayout, QLabel, QProgressBar, QPushButton,
@@ -167,6 +168,11 @@ class GelView(QWidget):
     `zoom` widens the lanes and, through the minimum height, stretches the size
     axis; `set_range` pins that axis to a window of sizes, so bands a few bp
     apart separate. Without a range the axis spans every product, as before.
+
+    `set_scale` instead magnifies the whole picture — lanes, height, bands and
+    labels alike — at a fixed size of NATURAL_H × the lanes' width, as an image
+    viewer would: the floating window's zoom. `number_from` numbers the lanes
+    from a later pair, for a gel split into several.
     """
 
     laneClicked = pyqtSignal(str, str)    # pair, engine
@@ -176,6 +182,7 @@ class GelView(QWidget):
     LEFT, TOP, BOTTOM = 40, 30, 14
     LANE_W, GAP, PAIR_GAP = 26, 6, 14
     BASE_HEIGHT = 140
+    NATURAL_H = 460
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -184,6 +191,9 @@ class GelView(QWidget):
         self._auto = (80, 3000)
         self._range: tuple[float, float] | None = None
         self.zoom = 1.0
+        self.scale = 1.0
+        self._scaled = False
+        self.number_from = 1
         self.setMouseTracking(True)
         self.setMinimumHeight(self.BASE_HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
@@ -208,8 +218,26 @@ class GelView(QWidget):
     def _apply_range(self) -> None:
         self.lo, self.hi = self._range or self._auto
         self._layout_lanes()
+        self._fix_size()
         self.updateGeometry()
         self.update()
+
+    def set_scale(self, scale: float) -> None:
+        """Magnify everything by `scale`, at a fixed size (see the class doc)."""
+        self.scale = max(0.25, min(6.0, scale))
+        self._scaled = True
+        self._fix_size()
+        self.update()
+
+    def natural_size(self) -> QSize:
+        """The picture's size at scale 1."""
+        self._layout_lanes()
+        return QSize(max(220, self._width), self.NATURAL_H)
+
+    def _fix_size(self) -> None:
+        if self._scaled:
+            n = self.natural_size()
+            self.setFixedSize(round(n.width() * self.scale), round(n.height() * self.scale))
 
     def set_zoom(self, zoom: float) -> None:
         self.zoom = max(0.5, min(6.0, zoom))
@@ -237,6 +265,8 @@ class GelView(QWidget):
         self._width = int(x + 12)
 
     def sizeHint(self) -> QSize:  # noqa: N802
+        if self._scaled:
+            return self.size()
         self._layout_lanes()
         return QSize(max(220, self._width), max(300, self.minimumHeight()))
 
@@ -245,8 +275,12 @@ class GelView(QWidget):
 
     # -- geometry ------------------------------------------------------------
 
+    def _h(self) -> float:
+        """The height drawn in, before the scale."""
+        return self.height() / self.scale
+
     def _y(self, bp: float) -> float:
-        h = self.height() - self.TOP - self.BOTTOM
+        h = self._h() - self.TOP - self.BOTTOM
         lo, hi = math.log10(self.lo), math.log10(self.hi)
         return self.TOP + (hi - math.log10(bp)) / (hi - lo) * h
 
@@ -261,8 +295,10 @@ class GelView(QWidget):
     def paintEvent(self, _event) -> None:  # noqa: N802
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        p.scale(self.scale, self.scale)
         path = QPainterPath()
-        path.addRoundedRect(QRectF(self.rect()), 8, 8)
+        path.addRoundedRect(QRectF(0, 0, self.width() / self.scale, self._h()), 8, 8)
         p.fillPath(path, _GEL_BG)
 
         small = QFont(self.font())
@@ -307,7 +343,7 @@ class GelView(QWidget):
 
         if not self.lanes:
             p.setPen(_INK)
-            p.drawText(QRectF(self.LEFT + self.LANE_W, 0, 200, self.height()),
+            p.drawText(QRectF(self.LEFT + self.LANE_W, 0, 200, self._h()),
                        Qt.AlignmentFlag.AlignCenter, "Run to see the gel")
             return
 
@@ -335,7 +371,7 @@ class GelView(QWidget):
                 p.fillRect(QRectF(x + 3, y - 1.5 * bw, self.lane_w - 6, 3 * bw), c)
 
     def _pair_number(self, i: int) -> int:
-        n, prev = 0, None
+        n, prev = self.number_from - 1, None
         for ln in self.lanes[: i + 1]:
             if ln.pair != prev:
                 n += 1
@@ -344,7 +380,7 @@ class GelView(QWidget):
 
     def _lane_bg(self, p: QPainter, x: float, label: str) -> None:
         w = self.lane_w
-        p.fillRect(QRectF(x, self.TOP - 6, w, self.height() - self.TOP - 2), _LANE_BG)
+        p.fillRect(QRectF(x, self.TOP - 6, w, self._h() - self.TOP - 2), _LANE_BG)
         p.fillRect(QRectF(x + 3, self.TOP - 10, w - 6, 4), QColor("#1a232b"))  # well
         p.setPen(_INK)
         p.drawText(QRectF(x - 4, 2, w + 8, 14), Qt.AlignmentFlag.AlignCenter, label)
@@ -352,7 +388,7 @@ class GelView(QWidget):
     # -- interaction ---------------------------------------------------------
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
-        i = self._lane_at(event.position().x())
+        i = self._lane_at(event.position().x() / self.scale)
         if i is None:
             QToolTip.hideText()
             return
@@ -365,7 +401,7 @@ class GelView(QWidget):
                           f"sequences amplify" + (f"\nmain sizes: {top}" if top else ""), self)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
-        i = self._lane_at(event.position().x())
+        i = self._lane_at(event.position().x() / self.scale)
         if i is not None and event.button() == Qt.MouseButton.LeftButton:
             self.laneClicked.emit(self.lanes[i].pair, self.lanes[i].engine)
 
@@ -397,7 +433,10 @@ class GelWindow(QDialog):
     """
 
     laneClicked = pyqtSignal(str, str)
-    ZOOMS = (0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
+    # Zoom magnifies the whole gel, as an image viewer does; 100% is its
+    # natural size. Bands a few bp apart are separated by Size range instead.
+    ZOOMS = (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0, 6.0)
+    LANE_ZOOM = 1.6     # the lanes' shape here: wider than the panel's
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -409,10 +448,13 @@ class GelWindow(QDialog):
         self.gel = GelView()
         self.gel.laneClicked.connect(self.laneClicked)
         self.gel.zoomRequested.connect(self._step_zoom)
+        self.gel.set_zoom(self.LANE_ZOOM)
+        self.gel.set_scale(1.0)
+        self._fitted = False
         self.scroll = QScrollArea()
         self.scroll.setWidget(self.gel)
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self.scroll.setWidgetResizable(False)
+        self.scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
 
         bar = QHBoxLayout()
@@ -488,12 +530,18 @@ class GelWindow(QDialog):
 
     # -- zoom -----------------------------------------------------------------
 
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if not self._fitted:        # first opening: the whole gel in view
+            self._fitted = True
+            QTimer.singleShot(0, self.fit)
+
     def set_zoom(self, z: float) -> None:
-        self.gel.set_zoom(z)
+        self.gel.set_scale(z)
         self._update_zoom_label()
 
     def _step_zoom(self, step: int) -> None:
-        z = self.gel.zoom
+        z = self.gel.scale
         if step > 0:
             nxt = next((v for v in self.ZOOMS if v > z + 1e-6), self.ZOOMS[-1])
         else:
@@ -501,17 +549,16 @@ class GelWindow(QDialog):
         self.set_zoom(nxt)
 
     def fit(self) -> None:
-        """The largest zoom at which every lane fits the window's width."""
-        self.gel.set_zoom(1.0)
-        natural = self.gel.sizeHint().width()
-        room = self.scroll.viewport().width() - 4
-        z = 1.0 if natural <= 0 else room / natural
+        """The largest zoom at which the whole gel fits the window."""
+        n = self.gel.natural_size()
+        vp = self.scroll.viewport().size()
+        z = min((vp.width() - 4) / n.width(), (vp.height() - 4) / n.height())
         self.set_zoom(max(self.ZOOMS[0], min(self.ZOOMS[-1], z)))
 
     def _update_zoom_label(self) -> None:
-        self.zoom_label.setText(f"{self.gel.zoom * 100:.0f}%")
-        self.zoom_out.setEnabled(self.gel.zoom > self.ZOOMS[0] + 1e-6)
-        self.zoom_in.setEnabled(self.gel.zoom < self.ZOOMS[-1] - 1e-6)
+        self.zoom_label.setText(f"{self.gel.scale * 100:.0f}%")
+        self.zoom_out.setEnabled(self.gel.scale > self.ZOOMS[0] + 1e-6)
+        self.zoom_in.setEnabled(self.gel.scale < self.ZOOMS[-1] - 1e-6)
 
     # -- range ----------------------------------------------------------------
 
